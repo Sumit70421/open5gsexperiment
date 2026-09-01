@@ -181,6 +181,7 @@ roll_up() {
     compress_and_clean CULOGS "$GNB_PATH1/gNB_CU/bin" culogs "$win_start" "$win_end"
     compress_and_clean DUKPI  "$GNB_PATH2/PM"          dukpi  "$win_start" "$win_end"
     compress_and_clean CUKPI  "$GNB_PATH3/PM"          cukpi  "$win_start" "$win_end"
+    log "Disk free here: $(df -h . | awk 'NR==2 {print $4 " available (" $5 " used)"}')"
 }
 
 # ---------------------------------------------------------------------------
@@ -221,4 +222,5 @@ sync_dir "$GNB_PATH2/PM" dukpi '*'
 sync_dir "$GNB_PATH3/PM" cukpi '*'
 roll_up "$window_start" "$(date '+%Y%m%d_%H%M%S')"
 rm -f "$STOP_FILE"
+touch .stopped_clean
 log "Done. Archives are in $RUN_DIR/archives/"
