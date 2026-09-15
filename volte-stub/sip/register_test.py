@@ -190,8 +190,12 @@ def main():
         return replies
 
     print("[1/2] Sending initial REGISTER (Authorization header with empty challenge, per IMS-AKA) ...")
-    username = args.impi.split("@")[0]
-    initial_header = initial_auth_header(username, args.domain, f"sip:{args.domain}")
+    # Per 3GPP TS 24.229, the private user identity is a NAI (RFC 4282) --
+    # i.e. the FULL "user@realm" string -- and that's what's stored verbatim
+    # in the HSS's private-identity table. Using just the user part here
+    # (like a generic SIP digest username) makes the lookup fail even when
+    # the subscriber is provisioned correctly.
+    initial_header = initial_auth_header(args.impi, args.domain, f"sip:{args.domain}")
     replies = send_recv(initial_header)
     if not replies:
         print("[FAIL] No response at all from the P-CSCF.")
@@ -231,7 +235,7 @@ def main():
         elif args.password and auth:
             print()
             print("[2/2] Retrying REGISTER with MD5 digest credentials ...")
-            username = args.impi.split("@")[0]
+            username = args.impi  # full IMPI (NAI), same reasoning as above
             realm = auth.get("realm", args.domain)
             nonce = auth.get("nonce", "")
             uri = f"sip:{args.domain}"
