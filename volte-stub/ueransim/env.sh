@@ -26,8 +26,11 @@ export GNB_IP="${GNB_IP:-172.17.9.50}"
 # Test subscriber. These K/OPc values are the well-known open5gs default test
 # credentials used in every open5gs quickstart -- NOT secret, safe to commit.
 # Must match a subscriber you provisioned with scripts/provision_test_subscriber.sh
-export TEST_IMSI="${TEST_IMSI:-001010000000001}"
-export TEST_KEY="${TEST_KEY:-465B5CE8B199B49FAA5F0A2EE238A6B}"
+# (5G/AMF-UDR side) -- separate from FHoSS's own hss_db (Cx/IMS side).
+# Defaults to the IMSI already confirmed working end-to-end against FHoSS via
+# sip/register_test.py -- override TEST_IMSI if you provision a different one.
+export TEST_IMSI="${TEST_IMSI:-001010000000029}"
+export TEST_KEY="${TEST_KEY:-465B5CE8B199B49FAA5F0A2EE238A6BC}"
 export TEST_OPC="${TEST_OPC:-E8ED289DEBA952E4283B54E88E6183CA}"
 
 # IMS domain Kamailio is configured for (pcscf.cfg / icscf.cfg / scscf.cfg alias)
