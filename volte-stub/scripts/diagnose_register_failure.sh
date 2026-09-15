@@ -21,6 +21,47 @@ set -uo pipefail
 
 IMSI="${1:-001010000000001}"
 
+echo "== 0. Is anything actually listening on the Cx Diameter port (3868)? =="
+if command -v ss >/dev/null 2>&1; then
+    hit=$(sudo ss -ltnp 2>/dev/null | grep ':3868 ' || true)
+    if [ -n "$hit" ]; then
+        echo "  Something is listening on :3868 -- good, at least a Cx server process exists:"
+        echo "$hit" | sed 's/^/  /'
+    else
+        echo "  NOTHING is listening on :3868 anywhere on this host."
+        echo "  That alone fully explains a 403 'Private identity not found': I-CSCF/S-CSCF"
+        echo "  have a Diameter peer configured for hss.ims.mnc001.mcc001.3gppnetwork.org:3868"
+        echo "  (see icscf.xml / scscf.xml), but there is no HSS process actually serving Cx"
+        echo "  for them to talk to. open5gs's own hssd is Mongo-backed and, per your"
+        echo "  systemctl status, isn't even running -- so if you intended a separate"
+        echo "  MySQL-backed Cx HSS (e.g. the Open IMS Core 'FHoSS'), check whether that"
+        echo "  service is installed and running at all."
+    fi
+else
+    echo "  'ss' not available -- try: sudo lsof -i :3868   or   sudo netstat -ltnp | grep 3868"
+fi
+
+echo
+echo "== 0b. MySQL databases present (best-effort; may need credentials) =="
+if command -v mysql >/dev/null 2>&1; then
+    dbs=$( (sudo mysql -N -e "SHOW DATABASES;" 2>/dev/null) || (mysql -N -u root -p -e "SHOW DATABASES;" 2>/dev/null) || true)
+    if [ -n "$dbs" ]; then
+        echo "$dbs" | sed 's/^/  /'
+        echo "  For any DB above that looks HSS/IMS-related (not 'icscf' -- that one is only"
+        echo "  I-CSCF's static S-CSCF routing table, no subscriber data), list its tables:"
+        echo "    sudo mysql -N -e \"SHOW TABLES FROM <dbname>;\""
+        echo "  and look for something like IMS_SUBSCRIPTION / PUBLIC_IDENTITY / PRIVATE_IDENTITY"
+        echo "  (classic FHoSS/Open IMS Core schema) -- that's where imsi-${IMSI}'s IMS profile"
+        echo "  (private + public identity, auth data) would need a row."
+    else
+        echo "  Could not list databases without credentials. Run manually:"
+        echo "    sudo mysql -e 'SHOW DATABASES;'"
+    fi
+else
+    echo "  mysql client not on PATH."
+fi
+
+echo
 echo "== 1. Does subscriber imsi-${IMSI} exist, and does it have IMS/Cx data? =="
 if command -v open5gs-dbctl >/dev/null 2>&1; then
     out=$(open5gs-dbctl showall 2>/dev/null)
@@ -35,8 +76,19 @@ if command -v open5gs-dbctl >/dev/null 2>&1; then
         echo "    ../scripts/provision_test_subscriber.sh"
     fi
 else
-    echo "  open5gs-dbctl not on PATH. Check manually, e.g.:"
-    echo "    mongosh open5gs --eval 'db.subscribers.findOne({imsi:\"${IMSI}\"})'"
+    found=$(command -v find >/dev/null 2>&1 && sudo find / -xdev -name "open5gs-dbctl*" -type f 2>/dev/null | head -1)
+    if [ -n "${found:-}" ]; then
+        echo "  open5gs-dbctl not on PATH but found at: $found"
+        echo "    sudo $found showall | grep -B2 -A40 '\"imsi\" : \"${IMSI}\"'"
+    else
+        echo "  open5gs-dbctl not found. Since open5gs-webui is active on this host, the"
+        echo "  easiest check is the WebUI itself: http://<core-host>:3000 (default"
+        echo "  admin/1423) -> Subscriber -> search imsi-${IMSI}."
+        echo "  (Note: this only covers the 5G/Mongo side -- open5gs's own hssd isn't"
+        echo "  running per your systemctl status, so this subscriber DB is NOT what"
+        echo "  Kamailio's Cx lookup queries. See section 0/0b below for the actual"
+        echo "  Cx-serving HSS.)"
+    fi
 fi
 
 echo
