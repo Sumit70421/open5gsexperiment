@@ -20,6 +20,18 @@
 set -uo pipefail
 
 IMSI="${1:-001010000000001}"
+IMS_DOMAIN="${IMS_DOMAIN:-ims.mnc001.mcc001.3gppnetwork.org}"
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+HSS_DB="${HSS_DB:-hss_db}"
+IDENTITY_IMPI="${IMSI}@${IMS_DOMAIN}"
+
+mysqlx() {
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
+        mysql -N -u root -p"${MYSQL_ROOT_PASSWORD}" "$HSS_DB" -e "$1" 2>/dev/null
+    else
+        sudo mysql -N "$HSS_DB" -e "$1" 2>/dev/null
+    fi
+}
 
 echo "== 0. Is anything actually listening on the Cx Diameter port (3868)? =="
 if command -v ss >/dev/null 2>&1; then
@@ -42,70 +54,65 @@ else
 fi
 
 echo
-echo "== 0b. MySQL databases present (best-effort; may need credentials) =="
+echo "== 1. Direct check against FHoSS's '${HSS_DB}' MySQL DB for ${IDENTITY_IMPI} =="
+echo "  (override DB name with HSS_DB=..., password with MYSQL_ROOT_PASSWORD=... if needed)"
 if command -v mysql >/dev/null 2>&1; then
-    dbs=$( (sudo mysql -N -e "SHOW DATABASES;" 2>/dev/null) || (mysql -N -u root -p -e "SHOW DATABASES;" 2>/dev/null) || true)
-    if [ -n "$dbs" ]; then
-        echo "$dbs" | sed 's/^/  /'
-        echo "  For any DB above that looks HSS/IMS-related (not 'icscf' -- that one is only"
-        echo "  I-CSCF's static S-CSCF routing table, no subscriber data), list its tables:"
-        echo "    sudo mysql -N -e \"SHOW TABLES FROM <dbname>;\""
-        echo "  and look for something like IMS_SUBSCRIPTION / PUBLIC_IDENTITY / PRIVATE_IDENTITY"
-        echo "  (classic FHoSS/Open IMS Core schema) -- that's where imsi-${IMSI}'s IMS profile"
-        echo "  (private + public identity, auth data) would need a row."
+    if ! mysqlx "SELECT 1;" | grep -q 1; then
+        echo "  Could not connect to '${HSS_DB}'. Either it's named differently on this host"
+        echo "  (pass HSS_DB=<name>) or needs credentials (MYSQL_ROOT_PASSWORD=...)."
+        echo "  Databases actually present:"
+        (sudo mysql -N -e "SHOW DATABASES;" 2>/dev/null || mysql -N -u root -p -e "SHOW DATABASES;" 2>/dev/null) | sed 's/^/    /'
     else
-        echo "  Could not list databases without credentials. Run manually:"
-        echo "    sudo mysql -e 'SHOW DATABASES;'"
+        impi_row=$(mysqlx "SELECT id, identity, auth_scheme FROM impi WHERE identity='${IDENTITY_IMPI}';")
+        if [ -z "$impi_row" ]; then
+            echo "  NOT FOUND: no row in impi for identity='${IDENTITY_IMPI}'."
+            echo "  This alone fully explains the 403 -- add it (edit SUBSCRIBERS in your"
+            echo "  add_subscriber.sh and re-run it), or test against an IMSI that's already"
+            echo "  provisioned. Currently provisioned IMPIs:"
+            mysqlx "SELECT identity FROM impi;" | sed 's/^/    /'
+        else
+            echo "  FOUND: impi row = $impi_row"
+            echo "  Linked impu(s):"
+            impi_id=$(echo "$impi_row" | awk '{print $1}')
+            mysqlx "SELECT impu.identity, impu.can_register FROM impi_impu
+                    JOIN impu ON impu.id = impi_impu.id_impu
+                    WHERE impi_impu.id_impi = ${impi_id};" | sed 's/^/    /'
+            echo "  If this all looks right and you STILL get 403, the identity is provisioned"
+            echo "  correctly and the problem is upstream -- go straight to section 0 (is FHoSS"
+            echo "  actually listening on 3868?) and section 3 (Kamailio/FHoSS logs) below."
+        fi
     fi
 else
     echo "  mysql client not on PATH."
 fi
 
 echo
-echo "== 1. Does subscriber imsi-${IMSI} exist, and does it have IMS/Cx data? =="
+echo "== 1b. (secondary) 5G/Mongo subscriber DB -- NOT what Cx uses, just for completeness =="
 if command -v open5gs-dbctl >/dev/null 2>&1; then
-    out=$(open5gs-dbctl showall 2>/dev/null)
-    if echo "$out" | grep -q "\"imsi\" : \"${IMSI}\""; then
-        echo "  FOUND in subscriber DB. Full record (check for an ims/msisdn/IMS-profile"
-        echo "  block below vs. only slice/session data -- absence of an IMS profile is"
-        echo "  possibility #2 above):"
-        echo "$out" | grep -B2 -A40 "\"imsi\" : \"${IMSI}\""
-    else
-        echo "  NOT FOUND. This alone would fully explain the 403 -- the HSS has no"
-        echo "  record to answer a Cx lookup with. Provision it first:"
-        echo "    ../scripts/provision_test_subscriber.sh"
-    fi
+    open5gs-dbctl showall 2>/dev/null | grep -q "\"imsi\" : \"${IMSI}\"" \
+        && echo "  imsi-${IMSI} exists on the 5G/Mongo side too." \
+        || echo "  imsi-${IMSI} not found on the 5G/Mongo side either (irrelevant to Cx, but"
+    echo "  worth knowing if you also want this subscriber to attach over 5G)."
 else
-    found=$(command -v find >/dev/null 2>&1 && sudo find / -xdev -name "open5gs-dbctl*" -type f 2>/dev/null | head -1)
-    if [ -n "${found:-}" ]; then
-        echo "  open5gs-dbctl not on PATH but found at: $found"
-        echo "    sudo $found showall | grep -B2 -A40 '\"imsi\" : \"${IMSI}\"'"
-    else
-        echo "  open5gs-dbctl not found. Since open5gs-webui is active on this host, the"
-        echo "  easiest check is the WebUI itself: http://<core-host>:3000 (default"
-        echo "  admin/1423) -> Subscriber -> search imsi-${IMSI}."
-        echo "  (Note: this only covers the 5G/Mongo side -- open5gs's own hssd isn't"
-        echo "  running per your systemctl status, so this subscriber DB is NOT what"
-        echo "  Kamailio's Cx lookup queries. See section 0/0b below for the actual"
-        echo "  Cx-serving HSS.)"
-    fi
+    echo "  open5gs-dbctl not on PATH -- skip; irrelevant to the Cx/403 issue anyway."
 fi
 
 echo
-echo "== 2. HSS log (last 200 lines) -- look for Cx traffic around your test's timestamp =="
-if [ -r /var/log/open5gs/hss.log ]; then
-    tail -n 200 /var/log/open5gs/hss.log
-    echo
-    echo "  Look for: Multimedia-Auth-Request/Answer or User-Authorization-Request/Answer"
-    echo "  around the time you ran register_test.py, and what result code came back"
-    echo "  (DIAMETER_SUCCESS vs DIAMETER_ERROR_USER_UNKNOWN / DIAMETER_ERROR_IDENTITIES_DONT_MATCH)."
-    echo "  If you see NOTHING at all for that timestamp, the Cx request never reached"
-    echo "  the HSS -- that points at #3 (peer connection down) rather than #1/#2."
-else
-    echo "  /var/log/open5gs/hss.log not readable from here."
-    echo "  Run this script as root/with sudo on the core host, or check the path"
-    echo "  configured under 'logger: file: path:' in hss.yaml if it was changed."
-fi
+echo "== 2. Locate the actual Cx-serving HSS process (it's FHoSS, not open5gs's hssd) =="
+echo "  Your subscriber data lives in MySQL '${HSS_DB}' (FHoSS schema), and open5gs's own"
+echo "  hssd isn't running per your systemctl status -- so whatever answers Cx is a"
+echo "  separate process (FHoSS's Java server). Find it:"
+echo "    ps aux | grep -i -E 'hss|fhoss|java' | grep -v grep"
+echo "    systemctl list-units --type=service --all | grep -i hss"
+echo "  If nothing turns up, combined with section 0 finding nothing on :3868, that IS"
+echo "  the root cause: the HSS side of Cx was never started, independent of whether"
+echo "  ${IDENTITY_IMPI} is correctly provisioned in ${HSS_DB}."
+echo
+echo "  (open5gs's own /var/log/open5gs/hss.log, if present, belongs to hssd -- which per"
+echo "  your systemctl status isn't running, so it won't show Cx traffic. FHoSS's own log"
+echo "  location depends on how it's deployed -- e.g. a Tomcat instance under"
+echo "  /var/log/tomcat*/ or catalina.out, or wherever its own startup script points --"
+echo "  check whatever process section above finds for its working directory/args.)"
 
 echo
 echo "== 3. Kamailio P-CSCF/I-CSCF/S-CSCF logs =="
