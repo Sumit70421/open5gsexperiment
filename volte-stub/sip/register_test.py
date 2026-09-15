@@ -3,8 +3,9 @@
 Standalone SIP REGISTER probe for a Kamailio P-CSCF/I-CSCF/S-CSCF/HSS(Cx) chain.
 
 Purpose: answer "is my IMS core alive?" in a couple of seconds, without a
-phone, gNB/eNB, or PDU session. It sends a bare SIP REGISTER straight to the
-P-CSCF and reports how far it got:
+phone, gNB/eNB, or PDU session. It sends an IMS-AKA-style REGISTER (with the
+empty-challenge Authorization header 3GPP TS 24.229 requires so the S-CSCF
+can identify the IMPI) straight to the P-CSCF and reports how far it got:
 
   - No response at all           -> P-CSCF unreachable / not listening / firewalled
   - 100 Trying only, then nothing -> P-CSCF got it but I-CSCF/S-CSCF routing is broken
@@ -59,7 +60,7 @@ def build_register(domain, impi, impu, local_ip, local_port, branch, call_id,
         f"Via: SIP/2.0/UDP {local_ip}:{local_port};branch={branch};rport",
         f"Max-Forwards: 70",
         f"From: <sip:{impi}>;tag={tag}",
-        f"To: <sip:{impu}>",
+        f"To: <{impu}>",
         f"Call-ID: {call_id}",
         f"CSeq: {cseq} REGISTER",
         f"Contact: <sip:{impi.split('@')[0]}@{local_ip}:{local_port}>;expires={contact_expires}",
@@ -97,6 +98,17 @@ def md5_digest_response(username, realm, password, method, uri, nonce):
     return hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
 
 
+def initial_auth_header(username, realm, uri):
+    # Per 3GPP TS 24.229, even the FIRST (unauthenticated) REGISTER in IMS-AKA
+    # carries an Authorization header with empty nonce/response -- unlike plain
+    # RFC 3261 digest auth, where the first request normally has none at all.
+    # Kamailio's S-CSCF (ims_registrar_scscf) reads the "username" out of this
+    # header to know which IMPI to fetch a Cx auth vector for; without it, it
+    # rejects with 403 "Private identity not found" before ever reaching Cx.
+    return (f'Authorization: Digest username="{username}", realm="{realm}", '
+            f'nonce="", uri="{uri}", response=""')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -120,6 +132,8 @@ def main():
     args = ap.parse_args()
 
     impu = args.impu or f"sip:{args.impi.split('@')[0]}@{args.domain}"
+    if not impu.startswith("sip:"):
+        impu = f"sip:{impu}"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(args.timeout)
@@ -175,8 +189,10 @@ def main():
             pass
         return replies
 
-    print("[1/2] Sending unauthenticated REGISTER ...")
-    replies = send_recv()
+    print("[1/2] Sending initial REGISTER (Authorization header with empty challenge, per IMS-AKA) ...")
+    username = args.impi.split("@")[0]
+    initial_header = initial_auth_header(username, args.domain, f"sip:{args.domain}")
+    replies = send_recv(initial_header)
     if not replies:
         print("[FAIL] No response at all from the P-CSCF.")
         print("       -> Check the P-CSCF process is running and listening on")
