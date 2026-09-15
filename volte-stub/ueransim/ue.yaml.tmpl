@@ -1,0 +1,72 @@
+# UERANSIM UE config -- rendered by render-config.sh from env.sh values.
+# Requests BOTH DNNs your SMF/PCF are provisioned for (internet + ims), so a
+# successful run proves the "ims" PDU session -- the one a real phone needs
+# for its VoLTE/IMS registration -- actually comes up end-to-end.
+#
+# TEST_KEY/TEST_OPC are the open5gs default test credentials. This IMSI must
+# already exist in the HSS/UDR -- run scripts/provision_test_subscriber.sh first.
+
+supi: 'imsi-__TEST_IMSI__'
+mcc: '__MCC__'
+mnc: '__MNC__'
+protectionScheme: 0
+homeNetworkPublicKey: '5a8d38864820197c3394b92613b20b91633cbd897119273bf8e4a6f4eec0a25'
+homeNetworkPublicKeyId: 1
+routingIndicator: '0000'
+
+key: '__TEST_KEY__'
+op: '__TEST_OPC__'
+opType: 'OPC'
+amf: '8000'
+imei: '356938035643803'
+imeiSv: '4370816125816151'
+
+gnbSearchList:
+  - __GNB_IP__
+
+uacAic:
+  mps: false
+  mcs: false
+
+uacAcc:
+  normalClass: 0
+  class11: false
+  class12: false
+  class13: false
+  class14: false
+  class15: false
+
+sessions:
+  - type: 'IPv4'
+    apn: '__DNN_DATA__'
+    slice:
+      sst: __SST__
+      sd: 0x__SD__
+  - type: 'IPv4'
+    apn: '__DNN_IMS__'
+    slice:
+      sst: __SST__
+      sd: 0x__SD__
+    isEmergency: false
+
+configured-nssai:
+  - sst: __SST__
+    sd: 0x__SD__
+
+default-nssai:
+  - sst: __SST__
+    sd: 0x__SD__
+
+integrity:
+  IA1: true
+  IA2: true
+  IA3: true
+
+ciphering:
+  EA1: true
+  EA2: true
+  EA3: true
+
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'

@@ -1,0 +1,24 @@
+# UERANSIM gNB config -- rendered by render-config.sh from env.sh values.
+# Matches this core's amf.yaml: ngap server __AMF_IP__, plmn __MCC__/__MNC__,
+# tac __TAC__, slice sst=__SST__ sd=__SD__.
+
+mcc: '__MCC__'
+mnc: '__MNC__'
+
+nci: '0x000000010'
+idLength: 32
+tac: __TAC__
+
+linkIp: __GNB_IP__
+ngapIp: __GNB_IP__
+gtpIp: __GNB_IP__
+
+amfConfigs:
+  - address: __AMF_IP__
+    port: 38412
+
+slices:
+  - sst: __SST__
+    sd: 0x__SD__
+
+ignoreStreamIds: true

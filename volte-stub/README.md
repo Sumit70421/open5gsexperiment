@@ -1,0 +1,100 @@
+# VoLTE/IMS core test stub
+
+Tooling to check whether the open5gs core + Kamailio IMS stack (from
+`coreconfig.zip` / `imsconfig.zip`) is actually functioning, without having to
+attach a real phone via a real gNB/eNB every time.
+
+## What this is built against
+
+Read out of the configs you supplied:
+
+- **5G SA is the live path.** AMF/SMF/UPF/PCF are on PLMN `001/01`, all
+  reachable on `172.17.9.48`. `pcf.yaml` carries a populated IMS voice/video
+  QoS policy (added by a `02-install-ims.sh` installer), and Kamailio's
+  P-CSCF/I-CSCF/S-CSCF are all wired to domain
+  `ims.mnc001.mcc001.3gppnetwork.org` on the same `172.17.9.48` — matching the
+  5G side, not the 4G one.
+- **MME/HSS/PCRF (4G/EPC) look stale.** `mme.yaml` and `pcrf.yaml` are
+  byte-for-byte identical to the pre-IMS-install backup in your zip, still on
+  the default test PLMN `999/70`, with the MME's S1AP server bound to
+  loopback (`127.0.0.2`) — no external eNB could reach it as configured.
+  `pcrf.yaml` has no active `policy:` block at all, while `pcf.yaml` (5G) does.
+
+**Implication:** if your test phone is 5G-capable and camping on NR, the 5G
+path above is what matters, and the MME/PCRF being stale is very likely not
+your bug (just clean up later). If instead your phone/SIM is only doing 4G
+and expecting VoLTE over LTE, it cannot reach this MME at all, and the whole
+IMS chain being provisioned for `001/01` — not `999/70` — would be the actual
+problem. **Confirm which RAT/PLMN your phone is actually camping on before
+debugging further** — `scripts/health_check.py` flags this mismatch
+automatically.
+
+## Two independent ways to test, in order of speed
+
+### 1. IMS-only smoke test (seconds, no RAN needed at all)
+
+`sip/register_test.py` sends a bare SIP REGISTER straight to the P-CSCF. It
+doesn't need a PDU session, a subscriber in the AMF/SMF sense, or any RAN —
+only an HSS/UDR entry (or even none, a 4xx tells you that too) — and reports
+exactly how far the request got: P-CSCF unreachable, I-CSCF couldn't route
+it, or (the good outcome) a `401` challenge with a real Digest nonce, which
+means P-CSCF → I-CSCF → S-CSCF → HSS(Cx) all worked and the S-CSCF
+successfully pulled an auth vector.
+
+```bash
+python3 sip/register_test.py \
+  --pcscf 172.17.9.48 \
+  --domain ims.mnc001.mcc001.3gppnetwork.org \
+  --impi 001010000000001@ims.mnc001.mcc001.3gppnetwork.org
+```
+
+Run this first. If it fails, there's no point spinning up a virtual UE yet —
+fix the IMS chain (check I-CSCF's `s_cscf` table in `icscf.sql`, check the
+S-CSCF↔HSS Cx Diameter connection/realm match) and re-run until you get a 401.
+
+### 2. Full virtual gNB + UE attach (replaces "connect a real gNB")
+
+`ueransim/` drives [UERANSIM](https://github.com/aligungr/UERANSIM), an
+open-source RF-less 5G gNB+UE simulator. It speaks real NGAP/NAS to your
+actual AMF and real GTP-U to your actual UPF — it is not a mock of the core,
+it's a mock of the radio. A clean run proves registration, both PDU sessions
+(`internet` and `ims`), and — chained automatically — the SIP REGISTER out of
+the `ims` session's own IP, exactly like a real phone would do it.
+
+```bash
+cd ueransim
+./install.sh                        # once: clone + build UERANSIM
+../scripts/provision_test_subscriber.sh   # once: add the test IMSI to the HSS/UDR
+./render-config.sh                  # renders gnb.yaml / ue.yaml from env.sh
+sudo ./full-attach-test.sh          # attach, establish PDU sessions, SIP REGISTER
+```
+
+Edit `ueransim/env.sh` if any of the addresses/PLMN/slice values differ from
+what's shown above (they're pre-filled from your actual `amf.yaml`/`smf.yaml`).
+
+If you'd rather drive it by hand (two terminals, to watch NAS logs live):
+`./run-gnb.sh` in one, `sudo ./run-ue.sh` in the other.
+
+## Health check
+
+`scripts/health_check.py` — run on the baremetal host itself (paths default
+to `/etc/open5gs`, `/etc/kamailio_pcscf`, etc.) — checks that every NF's
+port is actually listening, MongoDB is reachable, and flags the PLMN/policy
+mismatches described above.
+
+```bash
+python3 scripts/health_check.py
+```
+
+## Reading the results
+
+- `register_test.py` gets a 401 **and** `full-attach-test.sh` succeeds, but
+  the phone still shows no VoLTE icon → the core is fine; look at the phone's
+  carrier/IMS config, the real gNB's reachability/PLMN selection, or AKA
+  credential provisioning for that specific SIM.
+- `register_test.py` fails outright → don't bother with the RAN simulator,
+  fix the IMS chain first (see section 1 above).
+- `full-attach-test.sh` fails to get `uesimtun1` (the `ims` session) up but
+  `uesimtun0` (`internet`) works → look at `pcf.yaml`'s policy/slice/DNN
+  match for the `ims` DNN, and whether the subscriber actually has an `ims`
+  session provisioned (see `scripts/provision_test_subscriber.sh` output).
