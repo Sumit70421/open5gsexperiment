@@ -9,8 +9,11 @@
 supi: 'imsi-__TEST_IMSI__'
 mcc: '__MCC__'
 mnc: '__MNC__'
+# protectionScheme 0 = NULL scheme (no SUCI concealment), so this key is
+# never actually used cryptographically -- it just has to pass UERANSIM's
+# fixed-length validation (32 bytes / 64 hex chars for a curve25519-sized key).
 protectionScheme: 0
-homeNetworkPublicKey: '5a8d38864820197c3394b92613b20b91633cbd897119273bf8e4a6f4eec0a25'
+homeNetworkPublicKey: '0000000000000000000000000000000000000000000000000000000000000000'
 homeNetworkPublicKeyId: 1
 routingIndicator: '0000'
 

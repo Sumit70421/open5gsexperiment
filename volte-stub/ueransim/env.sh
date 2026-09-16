@@ -23,13 +23,16 @@ export DNN_IMS="${DNN_IMS:-ims}"
 # actually assigned to an interface on the machine you run UERANSIM from.
 export GNB_IP="${GNB_IP:-172.17.9.50}"
 
-# Test subscriber. These K/OPc values are the well-known open5gs default test
-# credentials used in every open5gs quickstart -- NOT secret, safe to commit.
-# Must match a subscriber you provisioned with scripts/provision_test_subscriber.sh
-# (5G/AMF-UDR side) -- separate from FHoSS's own hss_db (Cx/IMS side).
-# Defaults to the IMSI already confirmed working end-to-end against FHoSS via
-# sip/register_test.py -- override TEST_IMSI if you provision a different one.
-export TEST_IMSI="${TEST_IMSI:-001010000000029}"
+# Test subscriber. The placeholders below are generic open5gs-quickstart
+# test values -- NOT your real subscriber's key. K/OPc MUST exactly match
+# whatever is actually stored for TEST_IMSI in your UDR, or UERANSIM's AKA
+# will fail (network computes a different expected response than the UE).
+#
+# Do NOT hardcode your real subscriber's K/OPc here -- this file gets
+# committed/shared. Instead export them at runtime, e.g.:
+#   TEST_IMSI=001010000000029 TEST_KEY=<real K> TEST_OPC=<real OPc> \
+#     sudo -E ./full-attach-test.sh
+export TEST_IMSI="${TEST_IMSI:-001010000000001}"
 export TEST_KEY="${TEST_KEY:-465B5CE8B199B49FAA5F0A2EE238A6BC}"
 export TEST_OPC="${TEST_OPC:-E8ED289DEBA952E4283B54E88E6183CA}"
 

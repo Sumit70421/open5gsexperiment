@@ -2,18 +2,19 @@
 # Provisions the test subscriber that ueransim/ue.yaml.tmpl expects, so the
 # virtual UE can actually authenticate against your HSS/UDR.
 #
-# IMSI/K/OPc here are the well-known open5gs default test credentials (used
-# in every open5gs quickstart) -- not secret, safe to reuse for a lab UE.
-# Override via env vars if you want a different test identity.
+# Placeholders below are generic open5gs-quickstart test values -- override
+# via env vars to match whatever IMSI/K/OPc you actually want provisioned
+# (e.g. the same ones already in your add_subscriber.sh for FHoSS, if you
+# want one identity usable on both the Cx/IMS side and the 5G/AMF-UDR side).
+# Don't hardcode real subscriber key material into this file -- pass it at
+# runtime instead:
+#   TEST_IMSI=<imsi> TEST_KEY=<K> TEST_OPC=<OPc> ./provision_test_subscriber.sh
 #
 # NOTE: this provisions the 5G/AMF-UDR side (Mongo-backed) subscriber --
-# separate from FHoSS's own hss_db (Cx/IMS side). If you're testing with an
-# IMSI already provisioned in FHoSS (e.g. via your own add_subscriber.sh),
-# this script provisions the matching row on the 5G side so the same
-# identity can also attach over NGAP/NAS via UERANSIM.
+# separate from FHoSS's own hss_db (Cx/IMS side).
 set -uo pipefail
 
-IMSI="${TEST_IMSI:-001010000000029}"
+IMSI="${TEST_IMSI:-001010000000001}"
 KEY="${TEST_KEY:-465B5CE8B199B49FAA5F0A2EE238A6BC}"
 OPC="${TEST_OPC:-E8ED289DEBA952E4283B54E88E6183CA}"
 SST="${SST:-1}"
