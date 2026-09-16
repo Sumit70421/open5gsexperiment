@@ -23,6 +23,21 @@ fi
 ./render-config.sh
 echo
 
+# GNB_IP must be a real, locally-bindable address (the gNB binds it for both
+# its SCTP connection to the AMF and its local RLS link to the UE) -- not
+# just "in the right subnet". Catch this here with the exact fix, instead of
+# UERANSIM failing deep in a log with "Cannot assign requested address".
+if ! ip -4 addr show 2>/dev/null | grep -q "inet ${GNB_IP}/"; then
+    echo "[!] GNB_IP=${GNB_IP} is not assigned to any interface on this host."
+    echo "    Find your core-facing interface (the one with ${AMF_IP}) and add it:"
+    echo "      ip -4 addr show"
+    echo "      sudo ip addr add ${GNB_IP}/24 dev <that interface>"
+    echo "    Then re-run this script. (If you're running UERANSIM from a"
+    echo "    different machine than the core, set GNB_IP to an address on"
+    echo "    that machine instead, in the same routable network as ${AMF_IP}.)"
+    exit 1
+fi
+
 GNB_PID=""
 UE_PID=""
 cleanup() {
