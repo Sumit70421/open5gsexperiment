@@ -86,6 +86,31 @@ mismatches described above.
 python3 scripts/health_check.py
 ```
 
+## Diagnosing a real UE that never reaches P-CSCF
+
+There is no persistent "SMF↔P-CSCF connection" to test — P-CSCF discovery is
+a one-shot value SMF stuffs into the PCO of the PDU Session Establishment
+Accept, only when a UE successfully establishes a session on the `ims` DNN.
+If a real phone shows nothing at all on P-CSCF, the most common cause is
+that the phone never requested the `ims` DNN in the first place (commercial
+phones typically need carrier IMS/APN config pushed to them before they'll
+attempt it on their own) — not a broken link between SMF and P-CSCF.
+
+To see exactly which layer the real attach stops at, run this on the core
+host, start it *before* the real phone attaches, then trigger the attach:
+
+```bash
+sudo ./scripts/trace_real_attach.sh
+```
+
+It tails AMF/SMF/UPF and the Kamailio P-CSCF/I-CSCF/S-CSCF logs together,
+each line labeled by source, so you can read top-to-bottom and see where it
+actually stops: NGAP/NAS reaching the AMF at all, an `ims` PDU Session
+Establishment Request ever showing up at SMF, UPF's PFCP session for it, and
+finally the SIP REGISTER hitting P-CSCF. If `[SMF]` never shows an `ims`
+session request, that confirms the phone-side hypothesis above and the fix
+is on the phone/carrier-config side, not the core.
+
 ## Diagnosing a 403 "Private identity not found"
 
 If `register_test.py` comes back with `403 Forbidden - Private identity not
