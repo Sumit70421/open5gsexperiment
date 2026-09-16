@@ -4,9 +4,9 @@
 # the "ims" session's own IP straight through the P-CSCF -- the same signaling
 # path a real phone would use for VoLTE, minus the phone and the radio.
 #
-# Requires: ./install.sh and ./render-config.sh already run, and the test
-# subscriber provisioned (../scripts/provision_test_subscriber.sh). Must run
-# as root (UE needs to create a TUN device).
+# Requires: ./install.sh already run, and the test subscriber provisioned
+# (../scripts/provision_test_subscriber.sh). Must run as root (UE needs to
+# create a TUN device).
 set -uo pipefail
 cd "$(dirname "$0")"
 source ./env.sh
@@ -15,10 +15,13 @@ if [ "$(id -u)" -ne 0 ]; then
     echo "[!] Must run as root (sudo) -- the UE process creates a TUN interface."
     exit 1
 fi
-if [ ! -f build/gnb.yaml ] || [ ! -f build/ue.yaml ]; then
-    echo "[!] Rendered configs missing -- run ./render-config.sh first."
-    exit 1
-fi
+
+# Always re-render before running, so a stale build/*.yaml from a previous
+# version of the templates (or an old env.sh override) can never silently
+# get fed to UERANSIM -- this was the actual cause of at least one confusing
+# "already fixed but still failing" report.
+./render-config.sh
+echo
 
 GNB_PID=""
 UE_PID=""
