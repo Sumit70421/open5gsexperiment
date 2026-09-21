@@ -222,7 +222,6 @@ SQL
 # --------------------------------------------------------------------------
 log "Building Open5GS from source"
 fetch_source open5gs "$SRC_DIR/open5gs" https://github.com/open5gs/open5gs
-pip3 install --quiet pymongo || pip3 install --quiet --break-system-packages pymongo || true
 
 cd "$SRC_DIR/open5gs"
 if [[ ! -d build ]]; then
@@ -260,7 +259,11 @@ add_tun ogstun  10.45.0.1/16 cafe::1/48
 add_tun ogstun2 10.46.0.1/16 cafe:1::1/48
 
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
-sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+# Some minimal/container VM images have no IPv6 stack at all (no
+# /proc/sys/net/ipv6 tree), which makes this fail outright -- don't let
+# that abort the whole netconf script over an IPv6-only knob when the
+# IPv4 TUN setup above (what actually matters) already succeeded.
+sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
 
 add_nat() {
   local subnet=$1 dev=$2
@@ -335,9 +338,19 @@ for nf in "${NFS_FIRST[@]}"; do install_o5gs_unit "$nf" ""; done
 for nf in "${NFS_REST[@]}";  do install_o5gs_unit "$nf" "open5gs-nrfd.service open5gs-scpd.service"; done
 
 systemctl daemon-reload
-for nf in "${NFS_FIRST[@]}"; do systemctl enable --now "open5gs-${nf}d.service"; done
+# Each NF is started individually rather than as one `systemctl enable --now
+# a b c ...` call, and a failure on any one is only warned about, not fatal:
+# these 11 daemons are independent of each other, so one failing to start
+# (e.g. udrd/pcfd without a reachable Mongo) shouldn't abort the whole
+# script and skip Kamailio/rtpengine/pyHSS, which don't depend on it at
+# all. The final status report is what actually tells you what's up.
+for nf in "${NFS_FIRST[@]}"; do
+  systemctl enable --now "open5gs-${nf}d.service" || warn "open5gs-${nf}d failed to start -- see: journalctl -u open5gs-${nf}d"
+done
 sleep 2
-for nf in "${NFS_REST[@]}";  do systemctl enable --now "open5gs-${nf}d.service"; done
+for nf in "${NFS_REST[@]}"; do
+  systemctl enable --now "open5gs-${nf}d.service" || warn "open5gs-${nf}d failed to start -- see: journalctl -u open5gs-${nf}d"
+done
 
 # --------------------------------------------------------------------------
 # 8. Build & install Kamailio (mainline) with the IMS module set the uploaded
@@ -490,7 +503,7 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now rtpengine.service
+systemctl enable --now rtpengine.service || warn "rtpengine failed to start -- see: journalctl -u rtpengine"
 
 # --------------------------------------------------------------------------
 # 12. pyHSS (Cx/Dx HSS) -- fills the gap: no HSS was present in the uploaded
@@ -547,7 +560,9 @@ done
 
 systemctl daemon-reload
 systemctl enable --now redis-server
-systemctl enable --now pyhss-diameterService.service pyhss-hssService.service pyhss-apiService.service
+for svc in diameterService hssService apiService; do
+  systemctl enable --now "pyhss-${svc}.service" || warn "pyhss-${svc} failed to start -- see: journalctl -u pyhss-${svc}"
+done
 
 # --------------------------------------------------------------------------
 # 12b. Bootstrap the two APNs (internet/ims) in pyHSS once. SUBSCRIBER rows
@@ -629,9 +644,11 @@ HOSTS
 # 14. Start Kamailio last (needs pyHSS + DNS/hosts + MySQL schemas in place)
 # --------------------------------------------------------------------------
 log "Starting Kamailio P/I/S-CSCF"
-systemctl enable --now kamailio-icscf.service kamailio-scscf.service
+for role in icscf scscf; do
+  systemctl enable --now "kamailio-${role}.service" || warn "kamailio-${role} failed to start -- see: journalctl -u kamailio-${role}"
+done
 sleep 1
-systemctl enable --now kamailio-pcscf.service
+systemctl enable --now kamailio-pcscf.service || warn "kamailio-pcscf failed to start -- see: journalctl -u kamailio-pcscf"
 
 install -m 0755 "$SCRIPT_DIR/provision-subscriber.sh" /usr/local/bin/provision-subscriber
 install -m 0755 "$SCRIPT_DIR/monitor-overnight.sh" /usr/local/bin/monitor-overnight
