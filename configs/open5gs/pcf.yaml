@@ -1,0 +1,85 @@
+logger:
+  file:
+    path: /var/log/open5gs/pcf.log
+pcf:
+  sbi:
+    server:
+      - address: 127.0.0.13
+        port: 7777
+    client:
+      scp:
+        - uri: http://127.0.0.200:7777
+db_uri: mongodb://localhost/open5gs
+
+################################################################################
+# IMS voice/video policy — added by 02-install-ims.sh
+# Applies to all subscribers under this PLMN's test SUPI range. Adjust the
+# supi_range below if your real subscriber IMSIs fall outside 001010000000001-
+# 001019999999999 (i.e. if you changed MCC/MNC away from the 001/01 test PLMN).
+################################################################################
+policy:
+  - supi_range:
+      - 001010000000001-001019999999999
+    plmn_id:
+      mcc: 001
+      mnc: 01
+    session:
+      - name: internet
+        type: 3
+        ambr:
+          downlink: { value: 1, unit: 3 }
+          uplink: { value: 1, unit: 3 }
+        qos:
+          index: 9
+          arp:
+            priority_level: 8
+            pre_emption_vulnerability: 1
+            pre_emption_capability: 1
+      - name: ims
+        type: 3
+        ambr:
+          downlink: { value: 1, unit: 3 }
+          uplink: { value: 1, unit: 3 }
+        qos:
+          index: 5
+          arp:
+            priority_level: 1
+            pre_emption_vulnerability: 1
+            pre_emption_capability: 1
+        pcc_rule:
+          # Voice media — 5QI=1, GBR, highest ARP priority
+          - qos:
+              index: 1
+              arp:
+                priority_level: 1
+                pre_emption_vulnerability: 1
+                pre_emption_capability: 1
+              mbr:
+                downlink: { value: 128, unit: 1 }
+                uplink: { value: 128, unit: 1 }
+              gbr:
+                downlink: { value: 128, unit: 1 }
+                uplink: { value: 128, unit: 1 }
+            flow:
+              - direction: 2
+                description: "permit out udp from any 1-65535 to assigned 1-65535"
+              - direction: 1
+                description: "permit out udp from any 1-65535 to assigned 1-65535"
+          # Video media — 5QI=2, GBR
+          - qos:
+              index: 2
+              arp:
+                priority_level: 2
+                pre_emption_vulnerability: 1
+                pre_emption_capability: 1
+              mbr:
+                downlink: { value: 1024, unit: 1 }
+                uplink: { value: 1024, unit: 1 }
+              gbr:
+                downlink: { value: 1024, unit: 1 }
+                uplink: { value: 1024, unit: 1 }
+            flow:
+              - direction: 2
+                description: "permit out udp from any 1-65535 to assigned 1-65535"
+              - direction: 1
+                description: "permit out udp from any 1-65535 to assigned 1-65535"

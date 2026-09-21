@@ -1,0 +1,11 @@
+logger:
+  file:
+    path: /var/log/open5gs/nrf.log
+global:
+  max:
+    ue: 1024
+nrf:
+  sbi:
+    server:
+      - address: 127.0.0.10
+        port: 7777
