@@ -132,11 +132,15 @@ BUILD_PACKAGES+=(libmnl-dev)
 # is the single flakiest part of building rtpengine and isn't needed for a
 # lab voice/video call test). Verified against rtpengine's own
 # utils/gen-common-flags, which hard-fails the build if any of these (or
-# libssl-dev/libmysqlclient-dev, already listed above) are missing.
+# libssl-dev/libmysqlclient-dev, already listed above) are missing. Its
+# curl check is just `pkg-config --exists libcurl` -- any flavor satisfies
+# it, so this deliberately does NOT list libcurl4-openssl-dev: Ubuntu's
+# libcurl4-*-dev packages (gnutls/openssl/nss backends) Conflict with each
+# other, and libcurl4-gnutls-dev is already pulled in above for Open5GS.
 BUILD_PACKAGES+=(libglib2.0-dev libjson-glib-dev zlib1g-dev libpcre2-dev
-  libhiredis-dev gperf libcurl4-openssl-dev libevent-dev libpcap-dev
-  libsystemd-dev libspandsp-dev libmosquitto-dev libwebsockets-dev
-  libopus-dev libncurses-dev libjwt-dev)
+  libhiredis-dev gperf libevent-dev libpcap-dev libsystemd-dev
+  libspandsp-dev libmosquitto-dev libwebsockets-dev libopus-dev
+  libncurses-dev libjwt-dev)
 
 # MySQL, MongoDB prereqs, Redis (pyHSS)
 BUILD_PACKAGES+=(mysql-server redis-server)
@@ -162,7 +166,7 @@ if ! apt-get install -y "${BUILD_PACKAGES[@]}"; then
   # All names resolve individually -- the failure was something else
   # (network blip, dpkg lock, disk space). Re-run and let it surface directly.
   apt-get install -y "${BUILD_PACKAGES[@]}" \
-    || die "apt-get install failed -- check the output above (every package name is valid, so this is something else: network, disk space, or a held dpkg lock)"
+    || die "apt-get install failed -- every package name individually resolves, so check the output above for a 'Conflicts:' line between two of them (fix: drop one from the BUILD_PACKAGES list near the top of install.sh), or a network/disk-space/held-dpkg-lock issue"
 fi
 
 # --------------------------------------------------------------------------
