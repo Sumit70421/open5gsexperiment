@@ -130,6 +130,11 @@ BUILD_PACKAGES+=(libmysqlclient-dev libxml2-dev libpcre3-dev libradcli-dev)
 # Ubuntu's archives, which is why it 404s -- it was never actually needed).
 BUILD_PACKAGES+=(libmnl-dev)
 
+# libunistring-dev: Kamailio's websocket module (unistr.h, GNU libunistring)
+# needs it for UTF-8 validation of WS frames -- also missing from the
+# original list, found the same way as the others: by actually building.
+BUILD_PACKAGES+=(libunistring-dev)
+
 # rtpengine daemon build deps (userspace-only build: with_transcoding=no, no
 # dkms/kernel module, no recording daemon -- keeps this to plain library deps
 # instead of the full packaging toolchain, since the kernel-module/dkms path
