@@ -39,10 +39,14 @@ CFG_KAM="$REPO_DIR/configs/kamailio"
 TEMPLATE_IP="172.17.9.48"
 CORE_IP="${1:-${CORE_IP:-}}"
 if [[ -z "$CORE_IP" ]]; then
-  CORE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')"
+  # `|| true` on each attempt matters here: under `set -e -o pipefail`, an
+  # unguarded failure (e.g. `ip` not installed at all, not just "no route")
+  # would abort the whole script right here, silently, before the fallback
+  # below -- or the explicit error message after it -- ever gets to run.
+  CORE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')" || true
 fi
 if [[ -z "$CORE_IP" ]]; then
-  CORE_IP="$(hostname -I | awk '{print $1}')"
+  CORE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
 fi
 if [[ -z "$CORE_IP" ]]; then
   echo "Could not auto-detect this machine's IPv4 address. Pass it explicitly: sudo $0 <ip>" >&2
@@ -338,16 +342,35 @@ log "Building Kamailio $KAMAILIO_TAG from source"
 fetch_source kamailio "$SRC_DIR/kamailio" https://github.com/kamailio/kamailio "$KAMAILIO_TAG"
 cd "$SRC_DIR/kamailio"
 
-KAM_MODULES="kex tm tmx sl rr pv maxfwd textops textopsx siputils sanity ctl \
-cfg_rpc xlog auth usrloc registrar jsonrpcs xhttp corex pike nathelper htable \
-sqlops uac rtpping sdpops path statistics presence pua enum dispatcher rtimer \
-debugger siptrace tls websocket db_mysql db_cluster cdp cdp_avp ims_dialog \
-ims_usrloc_pcscf ims_ipsec_pcscf ims_registrar_pcscf ims_qos ims_icscf \
-ims_usrloc_scscf ims_registrar_scscf ims_auth ims_isc ims_charging rtpengine \
-sctp xmlrpc"
+# NOTE: rtpping is deliberately NOT in this list -- it doesn't exist in
+# Kamailio 6.1.4's src/modules/ at all (removed upstream at some point after
+# the uploaded pcscf.cfg was written against an older Kamailio). Its
+# loadmodule line in kamailio_pcscf.cfg is guarded by `#!ifdef WITH_RTPPING`,
+# which pcscf.cfg leaves disabled (`##!define WITH_RTPPING`), so it was
+# never going to be loaded at runtime anyway -- dropping it from the build
+# changes nothing behaviorally, it just stops the build from failing on a
+# module that can't be compiled.
+KAM_MODULES=(kex tm tmx sl rr pv maxfwd textops textopsx siputils sanity ctl
+  cfg_rpc xlog auth usrloc registrar jsonrpcs xhttp corex pike nathelper
+  htable sqlops uac sdpops path statistics presence pua enum dispatcher
+  rtimer debugger siptrace tls websocket db_mysql db_cluster cdp cdp_avp
+  ims_dialog ims_usrloc_pcscf ims_ipsec_pcscf ims_registrar_pcscf ims_qos
+  ims_icscf ims_usrloc_scscf ims_registrar_scscf ims_auth ims_isc
+  ims_charging rtpengine sctp xmlrpc)
+
+# Verify every module actually exists before spending minutes compiling --
+# a bad name here (like rtpping was) fails at the very end of `make all`
+# after building everything else, which is a much slower way to find out.
+KAM_MISSING=()
+for mod in "${KAM_MODULES[@]}"; do
+  [[ -d "src/modules/$mod" ]] || KAM_MISSING+=("$mod")
+done
+if [[ ${#KAM_MISSING[@]} -gt 0 ]]; then
+  die "These modules don't exist in this Kamailio checkout ($KAMAILIO_TAG): ${KAM_MISSING[*]} -- check 'ls $SRC_DIR/kamailio/src/modules/ | grep -i <topic>' for the current name, fix the KAM_MODULES array near the top of the Kamailio build step in install.sh, and re-run."
+fi
 
 export RADCLI=1
-make include_modules="$KAM_MODULES" cfg
+make include_modules="${KAM_MODULES[*]}" cfg
 make -j"$(nproc)" all
 make install
 ldconfig
