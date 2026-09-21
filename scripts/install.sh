@@ -445,7 +445,11 @@ cd "$SRC_DIR/rtpengine"
 # toolchain (the flakiest part of rtpengine across kernels/Ubuntu releases)
 # and transcoding support (needs ffmpeg headers, not needed when both call
 # legs negotiate the same codec, which is the normal case in this lab).
-make -C daemon -j"$(nproc)" with_transcoding=no
+# Building the explicit `rtpengine` target (not the default `all`) matters:
+# `all` also depends on the man page, which needs `pandoc` -- not installed,
+# not worth adding just for a man page nobody needs in this lab, and the
+# actual daemon binary compiles and links fine without it.
+make -C daemon -j"$(nproc)" with_transcoding=no rtpengine
 install -m 0755 daemon/rtpengine /usr/local/bin/rtpengine
 
 mkdir -p /etc/rtpengine
@@ -515,6 +519,12 @@ sed -i \
   -e "s/database: hss2/database: ${PYHSS_DB_NAME}/" \
   config.yaml
 
+# pyHSS's own code does open("../config.yaml") relative to CWD -- it must be
+# launched with the working directory set to services/, exactly like pyHSS's
+# own shipped (but unused here) systemd/*.service files do. Its lib/ modules
+# (messagingAsync, messaging, logtool, ...) also aren't importable without
+# lib/ on PYTHONPATH -- plain `python3 services/X.py` finds neither on its
+# own. Both confirmed missing by actually running the services, not assumed.
 for svc in diameterService hssService apiService; do
   cat > "/etc/systemd/system/pyhss-${svc}.service" <<UNIT
 [Unit]
@@ -524,7 +534,8 @@ Wants=mysql.service redis-server.service
 
 [Service]
 Type=simple
-WorkingDirectory=${PYHSS_DIR}
+WorkingDirectory=${PYHSS_DIR}/services
+Environment=PYTHONPATH=${PYHSS_DIR}/lib
 ExecStart=${PYHSS_DIR}/venv/bin/python3 ${PYHSS_DIR}/services/${svc}.py
 Restart=on-failure
 RestartSec=2
