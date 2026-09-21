@@ -107,34 +107,63 @@ log "Installing build/runtime dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 
-apt-get install -y \
-  build-essential git cmake ninja-build meson pkg-config flex bison \
-  python3 python3-pip python3-venv python3-dev \
-  gnupg curl ca-certificates \
-  `# --- Open5GS build deps --- ` \
-  libsctp-dev libc-ares-dev libgnutls28-dev libgcrypt-dev libssl-dev \
-  libmongoc-dev libbson-dev libyaml-dev libnghttp2-dev libmicrohttpd-dev \
-  libcurl4-gnutls-dev libtins-dev libtalloc-dev libidn11-dev \
-  `# --- Kamailio build deps --- ` \
-  bison flex libmysqlclient-dev libxml2-dev libpcre3-dev libradcli-dev \
-  `# --- IPsec (needed at runtime by the ims_ipsec_pcscf module, which the ` \
-  `#     P-CSCF config has enabled via WITH_IPSEC) --- ` \
-  ipsec-tools \
-  `# --- rtpengine daemon build deps (userspace-only build: with_transcoding=no, ` \
-  `#     no dkms/kernel module, no recording daemon -- keeps this to plain ` \
-  `#     library deps instead of the full packaging toolchain, since the ` \
-  `#     kernel-module/dkms path is the single flakiest part of building ` \
-  `#     rtpengine and isn't needed for a lab voice/video call test) --- ` \
-  pkg-config libglib2.0-dev libjson-glib-dev zlib1g-dev libpcre3-dev \
-  libpcre2-dev libhiredis-dev gperf libcurl4-openssl-dev libevent-dev \
-  libpcap-dev libsystemd-dev libspandsp-dev libmosquitto-dev \
-  libwebsockets-dev libopus-dev \
-  `# --- MySQL, MongoDB prereqs, Redis (pyHSS) --- ` \
-  mysql-server redis-server \
-  `# --- jq: used to parse pyHSS's REST API responses when bootstrapping APNs ` \
-  `#     and provisioning subscribers --- ` \
-  jq \
-  || die "apt-get install failed -- check the output above for the offending package"
+# Core build tooling
+BUILD_PACKAGES=(build-essential git cmake ninja-build meson pkg-config flex bison
+  python3 python3-pip python3-venv python3-dev gnupg curl ca-certificates)
+
+# Open5GS build deps
+BUILD_PACKAGES+=(libsctp-dev libc-ares-dev libgnutls28-dev libgcrypt-dev libssl-dev
+  libmongoc-dev libbson-dev libyaml-dev libnghttp2-dev libmicrohttpd-dev
+  libcurl4-gnutls-dev libtins-dev libtalloc-dev libidn11-dev)
+
+# Kamailio build deps
+BUILD_PACKAGES+=(libmysqlclient-dev libxml2-dev libpcre3-dev libradcli-dev)
+
+# libmnl: the actual dependency of Kamailio's ims_ipsec_pcscf module (which the
+# P-CSCF config enables via WITH_IPSEC) -- confirmed from its own README, it
+# programs IPsec SAs via the kernel's Netlink/XFRM interface through libmnl,
+# NOT via ipsec-tools/setkey (that's legacy PF_KEY tooling, dropped from
+# Ubuntu's archives, which is why it 404s -- it was never actually needed).
+BUILD_PACKAGES+=(libmnl-dev)
+
+# rtpengine daemon build deps (userspace-only build: with_transcoding=no, no
+# dkms/kernel module, no recording daemon -- keeps this to plain library deps
+# instead of the full packaging toolchain, since the kernel-module/dkms path
+# is the single flakiest part of building rtpengine and isn't needed for a
+# lab voice/video call test). Verified against rtpengine's own
+# utils/gen-common-flags, which hard-fails the build if any of these (or
+# libssl-dev/libmysqlclient-dev, already listed above) are missing.
+BUILD_PACKAGES+=(libglib2.0-dev libjson-glib-dev zlib1g-dev libpcre2-dev
+  libhiredis-dev gperf libcurl4-openssl-dev libevent-dev libpcap-dev
+  libsystemd-dev libspandsp-dev libmosquitto-dev libwebsockets-dev
+  libopus-dev libncurses-dev libjwt-dev)
+
+# MySQL, MongoDB prereqs, Redis (pyHSS)
+BUILD_PACKAGES+=(mysql-server redis-server)
+
+# jq: used to parse pyHSS's REST API responses when bootstrapping APNs and
+# provisioning subscribers
+BUILD_PACKAGES+=(jq)
+
+# Install everything in one batch (fast path). If that fails -- most likely
+# because one package name doesn't exist under this Ubuntu release/version
+# (already happened once with ipsec-tools, since removed) -- fall back to
+# checking each name individually so one bad name can't take the rest of
+# this down; report exactly what's missing instead of a single opaque error.
+if ! apt-get install -y "${BUILD_PACKAGES[@]}"; then
+  warn "Batch apt-get install failed -- retrying package by package to isolate the bad name(s)"
+  MISSING=()
+  for pkg in "${BUILD_PACKAGES[@]}"; do
+    apt-cache show "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
+  done
+  if [[ ${#MISSING[@]} -gt 0 ]]; then
+    die "These package names don't exist in apt's index on this VM: ${MISSING[*]} -- find the right name for your Ubuntu release with 'apt-cache search <topic>', edit the BUILD_PACKAGES list near the top of install.sh, and re-run (already-completed steps are safe to repeat)."
+  fi
+  # All names resolve individually -- the failure was something else
+  # (network blip, dpkg lock, disk space). Re-run and let it surface directly.
+  apt-get install -y "${BUILD_PACKAGES[@]}" \
+    || die "apt-get install failed -- check the output above (every package name is valid, so this is something else: network, disk space, or a held dpkg lock)"
+fi
 
 # --------------------------------------------------------------------------
 # 2. MongoDB (Open5GS UDR/PCF backend)
