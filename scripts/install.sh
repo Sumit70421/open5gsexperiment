@@ -67,6 +67,35 @@ die()  { echo -e "\033[1;31mFATAL: $*\033[0m" >&2; exit 1; }
 
 trap 'die "install.sh failed at line $LINENO. Nothing after that line ran -- fix the reported error and re-run; earlier steps are idempotent."' ERR
 
+# Fetch source for one of the four dependencies: use the pinned copy under
+# vendor/<name> if this script's repo was checked out with it (no network
+# needed for this step at all), otherwise git clone it (optionally at a
+# specific tag/branch) as before.
+fetch_source() {
+  local name=$1 dest=$2 url=$3 ref=${4:-}
+  local vendor_dir="$REPO_DIR/vendor/$name"
+  if [[ -d "$vendor_dir" ]]; then
+    log "Using vendored $name source from $vendor_dir (no network fetch needed)"
+    rm -rf "$dest"
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$vendor_dir" "$dest"
+    return
+  fi
+  if [[ -d "$dest/.git" ]]; then
+    log "Updating $name from $url"
+    (cd "$dest" && git fetch --tags origin && \
+      if [[ -n "$ref" ]]; then git checkout "$ref"; else git reset --hard origin/HEAD; fi)
+  else
+    log "Cloning $name from $url"
+    rm -rf "$dest"
+    if [[ -n "$ref" ]]; then
+      git clone --depth 1 --branch "$ref" "$url" "$dest"
+    else
+      git clone --depth 1 "$url" "$dest"
+    fi
+  fi
+}
+
 mkdir -p "$SRC_DIR" /var/log/open5gs
 
 log "Target IP: $CORE_IP (template IP in configs: $TEMPLATE_IP) | PLMN $MCC/$MNC | Kamailio $KAMAILIO_TAG | rtpengine $RTPENGINE_TAG"
@@ -102,6 +131,9 @@ apt-get install -y \
   libwebsockets-dev libopus-dev \
   `# --- MySQL, MongoDB prereqs, Redis (pyHSS) --- ` \
   mysql-server redis-server \
+  `# --- jq: used to parse pyHSS's REST API responses when bootstrapping APNs ` \
+  `#     and provisioning subscribers --- ` \
+  jq \
   || die "apt-get install failed -- check the output above for the offending package"
 
 # --------------------------------------------------------------------------
@@ -147,11 +179,7 @@ SQL
 # 4. Build & install Open5GS from source
 # --------------------------------------------------------------------------
 log "Building Open5GS from source"
-if [[ ! -d "$SRC_DIR/open5gs" ]]; then
-  git clone --depth 1 https://github.com/open5gs/open5gs "$SRC_DIR/open5gs"
-else
-  (cd "$SRC_DIR/open5gs" && git fetch --depth 1 origin && git reset --hard origin/HEAD)
-fi
+fetch_source open5gs "$SRC_DIR/open5gs" https://github.com/open5gs/open5gs
 pip3 install --quiet pymongo || pip3 install --quiet --break-system-packages pymongo || true
 
 cd "$SRC_DIR/open5gs"
@@ -274,12 +302,8 @@ for nf in "${NFS_REST[@]}";  do systemctl enable --now "open5gs-${nf}d.service";
 #    P/I/S-CSCF configs actually load
 # --------------------------------------------------------------------------
 log "Building Kamailio $KAMAILIO_TAG from source"
-if [[ ! -d "$SRC_DIR/kamailio" ]]; then
-  git clone https://github.com/kamailio/kamailio "$SRC_DIR/kamailio"
-fi
+fetch_source kamailio "$SRC_DIR/kamailio" https://github.com/kamailio/kamailio "$KAMAILIO_TAG"
 cd "$SRC_DIR/kamailio"
-git fetch --tags origin
-git checkout "$KAMAILIO_TAG"
 
 KAM_MODULES="kex tm tmx sl rr pv maxfwd textops textopsx siputils sanity ctl \
 cfg_rpc xlog auth usrloc registrar jsonrpcs xhttp corex pike nathelper htable \
@@ -354,12 +378,8 @@ done
 # 11. Build & install rtpengine (media relay) and wire it to the P-CSCF
 # --------------------------------------------------------------------------
 log "Building rtpengine $RTPENGINE_TAG from source (userspace daemon only)"
-if [[ ! -d "$SRC_DIR/rtpengine" ]]; then
-  git clone https://github.com/sipwise/rtpengine "$SRC_DIR/rtpengine"
-fi
+fetch_source rtpengine "$SRC_DIR/rtpengine" https://github.com/sipwise/rtpengine "$RTPENGINE_TAG"
 cd "$SRC_DIR/rtpengine"
-git fetch --tags origin
-git checkout "$RTPENGINE_TAG"
 # Plain daemon-only build: skips the dkms kernel module and packaging
 # toolchain (the flakiest part of rtpengine across kernels/Ubuntu releases)
 # and transcoding support (needs ffmpeg headers, not needed when both call
@@ -413,11 +433,7 @@ systemctl enable --now rtpengine.service
 #     authentication/registration round trip.
 # --------------------------------------------------------------------------
 log "Installing pyHSS"
-if [[ ! -d "$PYHSS_DIR" ]]; then
-  git clone https://github.com/herlesupreeth/pyhss "$PYHSS_DIR"
-else
-  (cd "$PYHSS_DIR" && git fetch origin && git reset --hard origin/HEAD)
-fi
+fetch_source pyhss "$PYHSS_DIR" https://github.com/herlesupreeth/pyhss
 cd "$PYHSS_DIR"
 python3 -m venv venv
 ./venv/bin/pip install --quiet --upgrade pip
@@ -460,6 +476,47 @@ done
 systemctl daemon-reload
 systemctl enable --now redis-server
 systemctl enable --now pyhss-diameterService.service pyhss-hssService.service pyhss-apiService.service
+
+# --------------------------------------------------------------------------
+# 12b. Bootstrap the two APNs (internet/ims) in pyHSS once. SUBSCRIBER rows
+#      have NOT NULL foreign keys to an APN and an AUC record (confirmed
+#      from pyHSS's own lib/database.py -- the API does not auto-create
+#      these), so provision-subscriber can't create a working subscriber
+#      without an APN already existing to point at. Done once here rather
+#      than per-subscriber since APNs are shared, not per-subscriber.
+# --------------------------------------------------------------------------
+log "Bootstrapping pyHSS APN records"
+PYHSS_API="http://127.0.0.1:8080"
+for i in $(seq 1 30); do
+  curl -sf "${PYHSS_API}/apn/" >/dev/null 2>&1 && break
+  sleep 1
+  [[ $i -eq 30 ]] && warn "pyHSS API never came up on ${PYHSS_API} -- APN bootstrap and provision-subscriber will fail until it does; check 'systemctl status pyhss-apiService'"
+done
+
+APN_ENV=/etc/open5gsexperiment-pyhss-apns.env
+get_or_create_apn() {
+  local name=$1 qci=$2
+  local existing
+  existing="$(curl -sf "${PYHSS_API}/apn/" 2>/dev/null | jq -r ".[] | select(.apn==\"${name}\") | .apn_id" 2>/dev/null | head -1)"
+  if [[ -n "$existing" && "$existing" != "null" ]]; then
+    echo "$existing"
+    return
+  fi
+  curl -sf -X PUT "${PYHSS_API}/apn/" -H 'Content-Type: application/json' \
+    -d "{\"apn\":\"${name}\",\"apn_ambr_dl\":1000000,\"apn_ambr_ul\":1000000,\"qci\":${qci}}" \
+    | jq -r '.apn_id'
+}
+APN_ID_INTERNET="$(get_or_create_apn internet 9)"
+APN_ID_IMS="$(get_or_create_apn ims 5)"
+if [[ -z "$APN_ID_INTERNET" || "$APN_ID_INTERNET" == "null" || -z "$APN_ID_IMS" || "$APN_ID_IMS" == "null" ]]; then
+  warn "Could not bootstrap APN records in pyHSS (API not reachable or returned unexpected data). provision-subscriber will not be able to create a working subscriber until ${APN_ENV} exists -- retry manually: curl -X PUT ${PYHSS_API}/apn/ ..., or check ${PYHSS_API}/docs/"
+else
+  cat > "$APN_ENV" <<ENV
+APN_ID_INTERNET=${APN_ID_INTERNET}
+APN_ID_IMS=${APN_ID_IMS}
+ENV
+  log "pyHSS APNs ready: internet=apn_id $APN_ID_INTERNET, ims=apn_id $APN_ID_IMS"
+fi
 
 # --------------------------------------------------------------------------
 # 12a. Log rotation -- a disk filling up from hours of logs is a common,

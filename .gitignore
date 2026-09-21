@@ -1,0 +1,3 @@
+# Vendored dependency source (~250MB) -- shipped as a separate zip download,
+# not tracked in git. Re-fetch with: see scripts/install.sh's fetch_source().
+/vendor/

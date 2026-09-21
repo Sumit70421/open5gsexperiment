@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 #
-# Provision one test subscriber on both sides of the stack:
-#   1. Open5GS 5GC (IMSI/K/OPc, both "internet" and "ims" DNNs)  -- via open5gs-dbctl
-#   2. pyHSS (the IMS-side subscriber + IMPI/IMPU)                -- via its REST API
+# Provision one subscriber on BOTH sides of the stack in one command -- this
+# is the only step needed before that IMSI can register and place an
+# audio/video call; nothing else needs touching by hand:
+#   1. Open5GS 5GC (IMSI/K/OPc, both "internet" and "ims" DNNs) -- via open5gs-dbctl
+#   2. pyHSS: AUC (Ki/OPc/AMF/SQN) + SUBSCRIBER + IMS_SUBSCRIBER    -- via its REST API
+#
+# Field names and the required creation order below (AUC and APN must exist
+# BEFORE the SUBSCRIBER row, which has NOT NULL foreign keys to both) come
+# straight from pyHSS's own lib/database.py model definitions, not guessed.
 #
 # Usage:
 #   sudo provision-subscriber <imsi> <ki> <opc> [msisdn]
@@ -19,44 +25,55 @@ OPC="${3:?need OPc}"
 MSISDN="${4:-0000000000}"
 REALM="ims.mnc001.mcc001.3gppnetwork.org"
 PYHSS_API="http://127.0.0.1:8080"
+APN_ENV=/etc/open5gsexperiment-pyhss-apns.env
 
-echo "==> Open5GS: adding IMSI $IMSI (internet + ims DNNs)"
+echo "==> Open5GS 5GC: adding IMSI $IMSI (internet + ims DNNs)"
 open5gs-dbctl add_ue_with_apn "$IMSI" "$KI" "$OPC" internet
 open5gs-dbctl update_apn "$IMSI" ims 1
 
-echo "==> pyHSS: adding subscriber + IMS identity"
-echo "    (pyHSS's exact API field names can change between versions --"
-echo "     if either call below returns a non-2xx status, open"
-echo "     ${PYHSS_API}/docs/ in a browser and provision manually through"
-echo "     the Swagger UI using the same IMSI/Ki/OPc/MSISDN instead.)"
+if [[ ! -f "$APN_ENV" ]]; then
+  echo "!! $APN_ENV not found -- install.sh's pyHSS APN bootstrap didn't complete."
+  echo "   Fix that first (see install.sh step 12b / 'systemctl status pyhss-apiService'),"
+  echo "   then re-run this script. The 5GC side above is already provisioned; only"
+  echo "   the IMS/pyHSS side below depends on it."
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$APN_ENV"
 
 http_status() { curl -s -o /tmp/pyhss_resp.json -w '%{http_code}' "$@"; }
+put() { http_status -X PUT "${PYHSS_API}$1" -H 'Content-Type: application/json' -d "$2"; }
 
-st=$(http_status -X PUT "${PYHSS_API}/subscriber/" \
-  -H 'accept: application/json' -H 'Content-Type: application/json' \
-  -d "{\"imsi\":\"${IMSI}\",\"enabled\":true,\"msisdn\":\"${MSISDN}\"}")
+fail_hint() {
+  echo "    !! $1 returned HTTP $2: $(cat /tmp/pyhss_resp.json)"
+  echo "       pyHSS's API surface can drift between versions -- if this keeps failing,"
+  echo "       finish this record by hand at ${PYHSS_API}/docs/ (Swagger UI) using the"
+  echo "       same IMSI/Ki/OPc/MSISDN, then re-run this script; it's safe to re-run."
+}
+
+echo "==> pyHSS: adding AuC record (Ki/OPc/AMF)"
+st=$(put "/auc/" "{\"imsi\":\"${IMSI}\",\"ki\":\"${KI}\",\"opc\":\"${OPC}\",\"amf\":\"8000\",\"sqn\":0}")
 if [[ "$st" != 2* ]]; then
-  echo "    !! PUT /subscriber/ returned HTTP $st: $(cat /tmp/pyhss_resp.json)"
-  echo "       -> finish this subscriber's base record at ${PYHSS_API}/docs/"
+  fail_hint "PUT /auc/" "$st"
+  exit 1
+fi
+AUC_ID="$(jq -r '.auc_id' /tmp/pyhss_resp.json)"
+
+echo "==> pyHSS: adding SUBSCRIBER record (auc_id=$AUC_ID, apns=$APN_ID_INTERNET,$APN_ID_IMS)"
+st=$(put "/subscriber/" "{\"imsi\":\"${IMSI}\",\"msisdn\":\"${MSISDN}\",\"enabled\":true,\"auc_id\":${AUC_ID},\"default_apn\":${APN_ID_INTERNET},\"apn_list\":\"${APN_ID_INTERNET},${APN_ID_IMS}\"}")
+if [[ "$st" != 2* ]]; then
+  fail_hint "PUT /subscriber/" "$st"
+  exit 1
 fi
 
-st=$(http_status -X PUT "${PYHSS_API}/auc/" \
-  -H 'accept: application/json' -H 'Content-Type: application/json' \
-  -d "{\"imsi\":\"${IMSI}\",\"ki\":\"${KI}\",\"opc\":\"${OPC}\",\"amf\":\"8000\",\"sqn\":0}")
+echo "==> pyHSS: adding IMS_SUBSCRIBER record (IMPI/IMPU)"
+st=$(put "/ims_subscriber/" "{\"msisdn\":\"${MSISDN}\",\"msisdn_list\":\"${MSISDN}\",\"imsi\":\"${IMSI}\"}")
 if [[ "$st" != 2* ]]; then
-  echo "    !! PUT /auc/ returned HTTP $st: $(cat /tmp/pyhss_resp.json)"
-  echo "       -> finish this subscriber's AuC (Ki/OPc) record at ${PYHSS_API}/docs/"
+  fail_hint "PUT /ims_subscriber/" "$st"
+  exit 1
 fi
 
-st=$(http_status -X PUT "${PYHSS_API}/ims_subscriber/" \
-  -H 'accept: application/json' -H 'Content-Type: application/json' \
-  -d "{\"msisdn\":\"${MSISDN}\",\"msisdn_list\":\"${MSISDN}\",\"imsi\":\"${IMSI}\"}")
-if [[ "$st" != 2* ]]; then
-  echo "    !! PUT /ims_subscriber/ returned HTTP $st: $(cat /tmp/pyhss_resp.json)"
-  echo "       -> finish the IMS (IMPI/IMPU) record at ${PYHSS_API}/docs/"
-fi
-
-echo "==> Done. IMS identities for this subscriber:"
+echo
+echo "==> Done -- this subscriber is fully provisioned on both sides, nothing else to add."
 echo "    IMPI: ${IMSI}@${REALM}"
 echo "    IMPU: sip:${IMSI}@${REALM}"
-echo "    Verify all three records at ${PYHSS_API}/docs/ before testing registration."
