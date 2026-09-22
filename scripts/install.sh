@@ -666,6 +666,7 @@ systemctl enable --now kamailio-pcscf.service || warn "kamailio-pcscf failed to 
 
 install -m 0755 "$SCRIPT_DIR/provision-subscriber.sh" /usr/local/bin/provision-subscriber
 install -m 0755 "$SCRIPT_DIR/monitor-overnight.sh" /usr/local/bin/monitor-overnight
+install -m 0755 "$SCRIPT_DIR/status.sh" /usr/local/bin/status
 
 # --------------------------------------------------------------------------
 # 15. Status report
