@@ -398,20 +398,25 @@ ldconfig
 # --------------------------------------------------------------------------
 log "Loading Kamailio DB schemas"
 MYSQL_DIR="$SRC_DIR/kamailio/utils/kamctl/mysql"
+# --force: these .sql files are raw CREATE TABLE/INSERT statements with no
+# IF NOT EXISTS/IGNORE guards, so a straight `mysql < file` errors out hard
+# on a re-run once the tables/rows already exist from a previous attempt --
+# found by actually re-running this script end to end. --force makes mysql
+# log and skip a failed statement (table exists, duplicate key, ...) instead
+# of aborting the whole load, which is what "safe to re-run" actually needs.
+mysql -u root --force pcscf < "$MYSQL_DIR/standard-create.sql"
+mysql -u root --force pcscf < "$MYSQL_DIR/presence-create.sql"
+mysql -u root --force pcscf < "$MYSQL_DIR/ims_usrloc_pcscf-create.sql"
+mysql -u root --force pcscf < "$MYSQL_DIR/ims_dialog-create.sql"
 
-mysql -u root pcscf < "$MYSQL_DIR/standard-create.sql"
-mysql -u root pcscf < "$MYSQL_DIR/presence-create.sql"
-mysql -u root pcscf < "$MYSQL_DIR/ims_usrloc_pcscf-create.sql"
-mysql -u root pcscf < "$MYSQL_DIR/ims_dialog-create.sql"
+mysql -u root --force scscf < "$MYSQL_DIR/standard-create.sql"
+mysql -u root --force scscf < "$MYSQL_DIR/presence-create.sql"
+mysql -u root --force scscf < "$MYSQL_DIR/ims_usrloc_scscf-create.sql"
+mysql -u root --force scscf < "$MYSQL_DIR/ims_dialog-create.sql"
+mysql -u root --force scscf < "$MYSQL_DIR/ims_charging-create.sql"
 
-mysql -u root scscf < "$MYSQL_DIR/standard-create.sql"
-mysql -u root scscf < "$MYSQL_DIR/presence-create.sql"
-mysql -u root scscf < "$MYSQL_DIR/ims_usrloc_scscf-create.sql"
-mysql -u root scscf < "$MYSQL_DIR/ims_dialog-create.sql"
-mysql -u root scscf < "$MYSQL_DIR/ims_charging-create.sql"
-
-mysql -u root icscf < "$CFG_KAM/icscf/icscf.sql"
-mysql -u root icscf < "$CFG_KAM/icscf-seed.sql"
+mysql -u root --force icscf < "$CFG_KAM/icscf/icscf.sql"
+mysql -u root --force icscf < "$CFG_KAM/icscf-seed.sql"
 
 # --------------------------------------------------------------------------
 # 10. Deploy Kamailio configs (from configs/kamailio/{pcscf,icscf,scscf}),
