@@ -28,8 +28,15 @@ PYHSS_API="http://127.0.0.1:8080"
 APN_ENV=/etc/open5gsexperiment-pyhss-apns.env
 
 echo "==> Open5GS 5GC: adding IMSI $IMSI (internet + ims DNNs)"
-open5gs-dbctl add_ue_with_apn "$IMSI" "$KI" "$OPC" internet
-open5gs-dbctl update_apn "$IMSI" ims 1
+# Tolerant of the subscriber already existing (e.g. added through the
+# WebUI first, which is a normal thing to do) -- open5gs-dbctl errors on a
+# duplicate IMSI, and under set -e that would abort this script before it
+# ever reached the IMS/pyHSS side below, which is the part that actually
+# still needs doing in that case.
+open5gs-dbctl add_ue_with_apn "$IMSI" "$KI" "$OPC" internet \
+  || echo "    (IMSI already exists in the 5GC -- fine, assuming it's already provisioned there)"
+open5gs-dbctl update_apn "$IMSI" ims 1 \
+  || echo "    (ims DNN already present for this IMSI -- fine)"
 
 if [[ ! -f "$APN_ENV" ]]; then
   echo "!! $APN_ENV not found -- install.sh's pyHSS APN bootstrap didn't complete."
