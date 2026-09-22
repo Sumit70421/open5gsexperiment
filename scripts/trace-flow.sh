@@ -87,7 +87,11 @@ fi
 JOURNAL_ARGS=()
 MAXLEN=0
 for k in "${KEYS[@]}"; do
-  u="${UNIT_OF[$k]}"
+  u="${UNIT_OF[$k]:-}"
+  if [[ -z "$u" ]]; then
+    echo "internal error: no unit mapped for key '$k' -- this is a bug in trace-flow, not your environment" >&2
+    exit 1
+  fi
   JOURNAL_ARGS+=(-u "$u")
   (( ${#u} > MAXLEN )) && MAXLEN=${#u}
 done
