@@ -667,6 +667,7 @@ systemctl enable --now kamailio-pcscf.service || warn "kamailio-pcscf failed to 
 install -m 0755 "$SCRIPT_DIR/provision-subscriber.sh" /usr/local/bin/provision-subscriber
 install -m 0755 "$SCRIPT_DIR/monitor-overnight.sh" /usr/local/bin/monitor-overnight
 install -m 0755 "$SCRIPT_DIR/status.sh" /usr/local/bin/status
+install -m 0755 "$SCRIPT_DIR/trace-flow.sh" /usr/local/bin/trace-flow
 
 # --------------------------------------------------------------------------
 # 15. Status report
@@ -696,6 +697,11 @@ if [[ $FAILED -eq 0 ]]; then
   echo "Before an overnight stability run, start the monitor so any drop can be"
   echo "checked against core/IMS service state at that exact timestamp:"
   echo "  sudo nohup monitor-overnight 15 /var/log/overnight-\$(date +%F).log &"
+  echo
+  echo "To watch a REGISTER/call live as it crosses AMF -> SMF -> UPF -> P/I/S-CSCF:"
+  echo "  sudo trace-flow          # all 6 units, chronologically interleaved"
+  echo "  sudo trace-flow ims      # just P-CSCF/I-CSCF/S-CSCF"
+  echo "  sudo trace-flow core     # just AMF/SMF/UPF"
 else
   echo -e "\033[1;31mOne or more services failed to start.\033[0m Check with:"
   echo "  journalctl -u <unit-name> -n 80 --no-pager"
