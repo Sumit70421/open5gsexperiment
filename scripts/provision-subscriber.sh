@@ -28,15 +28,32 @@ PYHSS_API="http://127.0.0.1:8080"
 APN_ENV=/etc/open5gsexperiment-pyhss-apns.env
 
 echo "==> Open5GS 5GC: adding IMSI $IMSI (internet + ims DNNs)"
+MONGO_URI="mongodb://localhost/open5gs"
+mongo_count() { mongosh --quiet --eval "$1" "$MONGO_URI" 2>/dev/null | tr -d '[:space:]'; }
+
 # Tolerant of the subscriber already existing (e.g. added through the
 # WebUI first, which is a normal thing to do) -- open5gs-dbctl errors on a
 # duplicate IMSI, and under set -e that would abort this script before it
-# ever reached the IMS/pyHSS side below, which is the part that actually
-# still needs doing in that case.
-open5gs-dbctl add_ue_with_apn "$IMSI" "$KI" "$OPC" internet \
-  || echo "    (IMSI already exists in the 5GC -- fine, assuming it's already provisioned there)"
-open5gs-dbctl update_apn "$IMSI" ims 1 \
-  || echo "    (ims DNN already present for this IMSI -- fine)"
+# ever reached the IMS/pyHSS side below. But "tolerant" can't just mean
+# "ignore the exit code and hope": that would just as happily paper over a
+# real failure (bad Mongo connection, wrong argument, etc.) and report
+# success anyway. So instead of trusting either open5gs-dbctl call's exit
+# code, verify the actual end state in MongoDB directly afterward.
+open5gs-dbctl add_ue_with_apn "$IMSI" "$KI" "$OPC" internet 2>/dev/null || true
+open5gs-dbctl update_apn "$IMSI" ims 1 2>/dev/null || true
+
+if [[ "$(mongo_count "db.subscribers.countDocuments({imsi:'${IMSI}'})")" != "1" ]]; then
+  echo "    !! IMSI ${IMSI} is NOT in the 5GC subscriber DB after attempting to add it."
+  echo "       Something is actually wrong (not just 'already existed') -- check manually:"
+  echo "       mongosh --eval \"db.subscribers.findOne({imsi:'${IMSI}'})\" ${MONGO_URI}"
+  exit 1
+fi
+if [[ "$(mongo_count "db.subscribers.countDocuments({imsi:'${IMSI}','slice.session.name':'ims'})")" != "1" ]]; then
+  echo "    !! IMSI ${IMSI} exists in the 5GC but has no 'ims' DNN session -- stopping."
+  echo "       Check: mongosh --eval \"db.subscribers.findOne({imsi:'${IMSI}'})\" ${MONGO_URI}"
+  exit 1
+fi
+echo "    confirmed in MongoDB: ${IMSI} present with both internet + ims DNNs"
 
 if [[ ! -f "$APN_ENV" ]]; then
   echo "!! $APN_ENV not found -- install.sh's pyHSS APN bootstrap didn't complete."
@@ -80,7 +97,19 @@ if [[ "$st" != 2* ]]; then
   exit 1
 fi
 
+# Read back what was actually created, rather than just trust the create
+# calls' status codes -- confirms the record genuinely exists in pyHSS's
+# DB under this IMSI, not just that the API said 2xx at the time.
+curl -s "${PYHSS_API}/ims_subscriber/" -o /tmp/pyhss_resp.json
+if ! jq -e --arg imsi "$IMSI" '.[] | select(.imsi == $imsi)' /tmp/pyhss_resp.json >/dev/null 2>&1; then
+  echo "    !! ${IMSI} was not found in pyHSS's ims_subscriber list on read-back."
+  echo "       The create calls above reported success, but something's inconsistent --"
+  echo "       check manually at ${PYHSS_API}/docs/ before trusting this subscriber."
+  exit 1
+fi
+echo "    confirmed in pyHSS: ${IMSI} present in ims_subscriber"
+
 echo
-echo "==> Done -- this subscriber is fully provisioned on both sides, nothing else to add."
+echo "==> Done -- verified on both sides, nothing else to add for this subscriber."
 echo "    IMPI: ${IMSI}@${REALM}"
 echo "    IMPU: sip:${IMSI}@${REALM}"
