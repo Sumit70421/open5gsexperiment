@@ -14,7 +14,7 @@
 	DefaultAuthSessionTimeout="3600"
 	MaxAuthSessionTimeout="3600"
 >
-	<Peer FQDN="hss.ims.mnc001.mcc001.3gppnetwork.org" Realm="ims.mnc001.mcc001.3gppnetwork.org" port="3868"/>
+	<Peer FQDN="hss.ims.mnc001.mcc001.3gppnetwork.org" Realm="ims.mnc001.mcc001.3gppnetwork.org" port="3888"/>
 		
 	<Acceptor port="3870" bind="172.17.9.48"/>
 

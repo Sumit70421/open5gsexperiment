@@ -529,12 +529,21 @@ python3 -m venv venv
 #    Peer FQDN="hss.ims.mnc001.mcc001.3gppnetwork.org") -- the shipped
 #    default OriginRealm is the *epc* realm, which is wrong for this role.
 #  - MCC/MNC and scscf_pool already match this deployment out of the box.
+#  - bind_port: pyHSS's own Diameter server defaults to 3868, the standard
+#    Diameter port -- but Open5GS's SMF already runs its own separate
+#    freeDiameter instance (for Gx) on that same port on this same host,
+#    and whichever one starts first wins it. Found by actually running the
+#    full stack: SMF starts earlier in this script and always wins, so
+#    pyHSS's diameterService looped crash-restarting on "address already in
+#    use". Moved to 3888 (matches the port in icscf.xml/scscf.xml's Peer
+#    entries, which configs/kamailio/*/*.xml already set to 3888 too).
 sed -i \
   -e "s/OriginHost: \"hss01\"/OriginHost: \"hss.${REALM}\"/" \
   -e "s/OriginRealm: \"epc.mnc001.mcc001.3gppnetwork.org\"/OriginRealm: \"${REALM}\"/" \
   -e "s/username: dbeaver/username: ${PYHSS_DB_USER}/" \
   -e "s/password: password/password: ${PYHSS_DB_PASS}/" \
   -e "s/database: hss2/database: ${PYHSS_DB_NAME}/" \
+  -e "s/bind_port: 3868/bind_port: 3888/" \
   config.yaml
 
 # pyHSS's own code does open("../config.yaml") relative to CWD -- it must be
