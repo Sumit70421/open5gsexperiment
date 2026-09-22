@@ -16,6 +16,14 @@
 # <imsi> must fall inside the supi_range already configured in
 # /etc/open5gs/pcf.yaml (001010000000001-001019999999999 by default) or the
 # voice/video QoS policy won't apply to it.
+#
+# NOT safe to re-run for an IMSI that already succeeded: pyHSS's AUC and
+# SUBSCRIBER tables both have a unique constraint on imsi with no upsert,
+# so a second run fails immediately at the AUC step with a duplicate-key
+# error rather than doing anything useful. If you need to redo one,
+# delete its AUC/SUBSCRIBER/IMS_SUBSCRIBER rows by hand first (e.g. via
+# http://127.0.0.1:8080/docs/, the Swagger UI) before running this again.
+# The 5GC (open5gs-dbctl) side is fine to re-run on its own.
 
 set -euo pipefail
 
@@ -96,18 +104,18 @@ if [[ "$st" != 2* ]]; then
   fail_hint "PUT /ims_subscriber/" "$st"
   exit 1
 fi
-
-# Read back what was actually created, rather than just trust the create
-# calls' status codes -- confirms the record genuinely exists in pyHSS's
-# DB under this IMSI, not just that the API said 2xx at the time.
-curl -s "${PYHSS_API}/ims_subscriber/" -o /tmp/pyhss_resp.json
-if ! jq -e --arg imsi "$IMSI" '.[] | select(.imsi == $imsi)' /tmp/pyhss_resp.json >/dev/null 2>&1; then
-  echo "    !! ${IMSI} was not found in pyHSS's ims_subscriber list on read-back."
-  echo "       The create calls above reported success, but something's inconsistent --"
-  echo "       check manually at ${PYHSS_API}/docs/ before trusting this subscriber."
+# /ims_subscriber/ only implements PUT, not GET (confirmed live: GET on it
+# returns 405 Method Not Allowed) -- there's no list endpoint to read back
+# against. Verify the same way auc_id is already verified above instead:
+# CreateObj() returns the full created row including its new primary key,
+# so a present, non-null ims_subscriber_id in the PUT response IS the
+# confirmation that the record really exists, without a second request.
+IMS_SUB_ID="$(jq -r '.ims_subscriber_id // empty' /tmp/pyhss_resp.json)"
+if [[ -z "$IMS_SUB_ID" ]]; then
+  echo "    !! PUT /ims_subscriber/ returned HTTP $st but no ims_subscriber_id in the body: $(cat /tmp/pyhss_resp.json)"
   exit 1
 fi
-echo "    confirmed in pyHSS: ${IMSI} present in ims_subscriber"
+echo "    confirmed: ims_subscriber_id=${IMS_SUB_ID} created for ${IMSI}"
 
 echo
 echo "==> Done -- verified on both sides, nothing else to add for this subscriber."
