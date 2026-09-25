@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Core Alibi</title>
+<meta name="description" content="Drop an Open5GS + IMS all.log to see, per UE, whether the core/IMS or the radio/phone side ended each overnight drop.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f2f4f6; --surface: #ffffff; --surface-2: #f7f8fa;
+    --ink: #10151a; --ink-2: #47505c; --muted: #768090; --hair: #e0e4e9; --axis: #c3cad2;
+    --accent: #1d5cb8; --accent-ink: #ffffff; --focus: #1d5cb8;
+    --c-call: #2a78d6; --c-call-audio: #86b6ef; --c-ran: #eb6834; --c-data: #1baf7a;
+    --crit: #d03b3b; --crit-ink: #a3272a; --crit-wash: rgba(208, 59, 59, .10);
+    --warn: #fab219; --warn-ink: #825400; --warn-wash: rgba(250, 178, 25, .16);
+    --good: #0ca30c; --good-ink: #006300; --good-wash: rgba(12, 163, 12, .09);
+    --chip: #eceff3; --chip-ink: #2f3842;
+    --shadow: 0 1px 2px rgba(16, 21, 26, .05), 0 2px 8px rgba(16, 21, 26, .04);
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0b0e11; --surface: #141920; --surface-2: #1a2027;
+      --ink: #edf0f3; --ink-2: #b5bec8; --muted: #7e8894; --hair: #252c34; --axis: #3a434d;
+      --accent: #5b9cf0; --accent-ink: #0b0e11; --focus: #7fb1f3;
+      --c-call: #3987e5; --c-call-audio: #1c5cab; --c-ran: #d95926; --c-data: #199e70;
+      --crit: #d03b3b; --crit-ink: #ff8f8c; --crit-wash: rgba(208, 59, 59, .20);
+      --warn: #fab219; --warn-ink: #fab219; --warn-wash: rgba(250, 178, 25, .14);
+      --good: #0ca30c; --good-ink: #3ecb3e; --good-wash: rgba(12, 163, 12, .16);
+      --chip: #222a32; --chip-ink: #d3dae2;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0b0e11; --surface: #141920; --surface-2: #1a2027;
+    --ink: #edf0f3; --ink-2: #b5bec8; --muted: #7e8894; --hair: #252c34; --axis: #3a434d;
+    --accent: #5b9cf0; --accent-ink: #0b0e11; --focus: #7fb1f3;
+    --c-call: #3987e5; --c-call-audio: #1c5cab; --c-ran: #d95926; --c-data: #199e70;
+    --crit: #d03b3b; --crit-ink: #ff8f8c; --crit-wash: rgba(208, 59, 59, .20);
+    --warn: #fab219; --warn-ink: #fab219; --warn-wash: rgba(250, 178, 25, .14);
+    --good: #0ca30c; --good-ink: #3ecb3e; --good-wash: rgba(12, 163, 12, .16);
+    --chip: #222a32; --chip-ink: #d3dae2;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { background: var(--page); color: var(--ink); font: 14px/1.5 var(--sans); padding-inline: 16px; padding-block: 0 48px; }
+  .wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 20px; }
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  h2 { font-size: 17px; font-weight: 600; letter-spacing: -.005em; }
+  p { margin: 0; }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* header */
+  .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding-block: 22px 4px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand svg { flex: none; }
+  .brand h1 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+  .brand p { color: var(--ink-2); font-size: 13.5px; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hair); background: var(--surface); color: var(--ink); border-radius: 8px; padding: 8px 14px; font: 500 14px var(--sans); cursor: pointer; }
+  .btn:hover { border-color: var(--axis); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .hint { color: var(--muted); font-size: 12.5px; max-width: 34ch; }
+
+  /* status strip */
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; font-size: 13px; color: var(--ink-2); }
+  .status .tag { font: 500 11.5px var(--sans); letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--chip); color: var(--chip-ink); }
+  .status .tag.sample { background: var(--warn-wash); color: var(--warn-ink); }
+  .progress { flex: 1 1 200px; height: 6px; border-radius: 3px; background: var(--hair); overflow: hidden; min-width: 120px; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .err { color: var(--crit-ink); font-weight: 500; }
+
+  /* verdict banner */
+  .banner { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; box-shadow: var(--shadow); padding: 22px 24px; display: grid; gap: 16px; }
+  .banner .verdict { display: flex; align-items: flex-start; gap: 14px; }
+  .banner .seal { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; }
+  .banner.clear .seal { background: var(--good-wash); color: var(--good-ink); }
+  .banner.guilty .seal { background: var(--crit-wash); color: var(--crit-ink); }
+  .banner h2 { font-size: 22px; letter-spacing: -.01em; }
+  .banner .lede { color: var(--ink-2); margin-top: 4px; max-width: 80ch; }
+  .banner ul.faults { margin: 8px 0 0; padding-left: 18px; color: var(--crit-ink); }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px 28px; border-top: 1px solid var(--hair); padding-top: 14px; }
+  .stat { display: grid; gap: 2px; min-width: 110px; }
+  .stat b { font-size: 20px; font-weight: 600; }
+  .stat span { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+  .stat.bad b { color: var(--crit-ink); }
+
+  /* cards */
+  .card { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px; display: grid; gap: 14px; min-width: 0; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .key { display: inline-block; width: 16px; height: 8px; border-radius: 2px; }
+  .key.tick { width: 3px; height: 12px; border-radius: 1px; }
+  .key.dot { width: 10px; height: 10px; border-radius: 50%; }
+  .key.band { height: 12px; border: 1px solid var(--crit); background: var(--crit-wash); }
+
+  .tl-scroll { overflow-x: auto; margin-inline: -4px; }
+  #tl { display: block; min-width: 680px; width: 100%; }
+  #tl text { font-family: var(--sans); fill: var(--ink-2); font-size: 11.5px; }
+  #tl .lbl-main { font-family: var(--mono); fill: var(--ink); font-size: 12px; font-weight: 500; }
+  #tl .lbl-sub { fill: var(--muted); font-size: 10.5px; font-family: var(--mono); }
+  #tl .grid { stroke: var(--hair); stroke-width: 1; }
+  #tl .axis-t { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+  #tl .lane { stroke: var(--hair); stroke-width: 1; }
+  #tl .data { fill: var(--c-data); }
+  #tl .call { fill: var(--c-call); }
+  #tl .call-a { fill: var(--c-call-audio); }
+  #tl .ran { stroke: var(--c-ran); stroke-width: 2; stroke-linecap: round; }
+  #tl .hit { fill: transparent; }
+  #tl .fault { fill: var(--crit-wash); stroke: var(--crit); stroke-width: 1; }
+  #tl .gnb { stroke: var(--c-ran); stroke-width: 1; }
+  #tl .gnb-t { fill: var(--c-ran); font-size: 10.5px; font-weight: 500; }
+  #tl .drop-core { fill: var(--crit); stroke: var(--surface); stroke-width: 2; }
+  #tl .drop-ran { fill: var(--ink); stroke: var(--surface); stroke-width: 2; }
+  #tl .cleanup { fill: var(--muted); stroke: var(--surface); stroke-width: 2; }
+  #tl [data-tip] { cursor: default; }
+  #tl a:hover .lbl-main { text-decoration: underline; }
+
+  /* UE cards */
+  .ue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .ue { background: var(--surface); border: 1px solid var(--hair); border-radius: 12px; padding: 16px 16px 12px; display: grid; gap: 10px; align-content: start; min-width: 0; scroll-margin-top: 16px; }
+  .ue.v-core { border-color: var(--crit); box-shadow: inset 0 3px 0 var(--crit); }
+  .ue header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .ue .imsi { font: 500 14px var(--mono); }
+  .ue .imsi b { font-weight: 600; color: var(--ink); }
+  .ue .imsi span { color: var(--muted); }
+  .ue .msisdn { font: 12px var(--mono); color: var(--muted); }
+  .chip { flex: none; display: inline-flex; align-items: center; gap: 6px; font: 600 11.5px var(--sans); letter-spacing: .02em; padding: 4px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--chip-ink); }
+  .chip.core { background: var(--crit); color: #fff; }
+  .chip.ok { background: var(--good-wash); color: var(--good-ink); }
+  .chip.warn { background: var(--warn-wash); color: var(--warn-ink); }
+  .chip svg { flex: none; }
+  .ue .headline { font-size: 15px; font-weight: 600; line-height: 1.35; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: 12.5px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .reasons { margin: 0; padding-left: 18px; display: grid; gap: 5px; color: var(--ink-2); font-size: 13px; }
+  details { font-size: 12.5px; }
+  details summary { cursor: pointer; color: var(--accent); font-weight: 500; padding-block: 2px; }
+  .ev-scroll { max-height: 280px; overflow: auto; margin-top: 6px; border: 1px solid var(--hair); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  .events td { padding: 4px 8px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  .events tr:last-child td { border-bottom: 0; }
+  .events td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--ink-2); }
+  .layer { font: 600 10px var(--sans); letter-spacing: .05em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--chip); color: var(--chip-ink); white-space: nowrap; }
+  .layer.ran { background: color-mix(in srgb, var(--c-ran) 18%, transparent); }
+  .layer.core-bad { background: var(--crit); color: #fff; }
+  .ev-detail { color: var(--muted); }
+
+  /* calls & health tables */
+  .tbl-scroll { overflow-x: auto; }
+  .tbl { min-width: 760px; font-size: 13px; }
+  .tbl th { text-align: left; font: 600 11.5px var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+  .tbl td { padding: 10px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl .num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .who { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  .who small { color: var(--muted); }
+  .why { color: var(--ink-2); max-width: 60ch; }
+  .why b { color: var(--ink); font-weight: 600; }
+  .why ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .finding { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--hair); }
+  .finding.critical { border-color: var(--crit); background: var(--crit-wash); }
+  .finding.warning { border-color: color-mix(in srgb, var(--warn) 60%, transparent); background: var(--warn-wash); }
+  .finding .ic { grid-row: span 2; padding-top: 1px; }
+  .finding b { font-weight: 600; }
+  .finding p { color: var(--ink-2); font-size: 12.5px; }
+  .findings { display: grid; gap: 8px; }
+  .ok-note { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--good-wash); color: var(--good-ink); font-weight: 500; }
+  .bars { display: grid; gap: 6px; }
+  .bars svg { width: 100%; height: 120px; display: block; }
+  .bars text { font: 10.5px var(--mono); fill: var(--muted); }
+  .bars .b { fill: var(--warn); }
+  select { font: 13px var(--sans); padding: 3px 6px; border-radius: 6px; border: 1px solid var(--hair); background: var(--surface); color: var(--ink); }
+
+  .method ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--ink-2); max-width: 90ch; }
+  .method b { color: var(--ink); }
+
+  .tip { position: fixed; z-index: 10; pointer-events: none; max-width: 340px; background: var(--ink); color: var(--page); font-size: 12.5px; line-height: 1.4; padding: 8px 10px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.2); }
+  .tip b { display: block; font-weight: 600; margin-bottom: 2px; }
+  .tip .t { font-family: var(--mono); opacity: .75; font-size: 11.5px; }
+  .dropzone { position: fixed; inset: 10px; z-index: 20; border: 2px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--page) 88%, transparent); display: grid; place-items: center; font: 600 18px var(--sans); color: var(--accent); }
+  @media (max-width: 560px) {
+    .banner { padding: 18px 16px; }
+    .card { padding: 16px 14px; }
+    .ue-grid { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { .progress i { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+        <rect width="40" height="40" rx="10" fill="var(--accent)"></rect>
+        <path d="M20 29V17" stroke="var(--accent-ink)" stroke-width="2.2" stroke-linecap="round"></path>
+        <circle cx="20" cy="14.5" r="2.6" fill="var(--accent-ink)"></circle>
+        <path d="M13.5 9.5a9 9 0 0 0 0 10M26.5 9.5a9 9 0 0 1 0 10" stroke="var(--accent-ink)" stroke-width="2" fill="none" stroke-linecap="round"></path>
+        <path d="M13 31h14" stroke="var(--accent-ink)" stroke-width="2.2" stroke-linecap="round"></path>
+      </svg>
+      <div>
+        <h1>Core Alibi</h1>
+        <p>Did the core or IMS drop your UEs overnight, or was it the radio side?</p>
+      </div>
+    </div>
+    <div class="actions">
+      <label class="btn primary" for="file">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 11V2m0 0L4.5 5.5M8 2l3.5 3.5M2.5 10.5v2A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        Open all.log
+      </label>
+      <input id="file" type="file" multiple hidden>
+      <span class="hint">Select <span class="mono">all.log</span> together with your <span class="mono">ping_&lt;ip&gt;.log</span> files, or drop them anywhere on the page.</span>
+    </div>
+  </header>
+
+  <section class="status" id="status" aria-live="polite"></section>
+  <section class="banner" id="banner"></section>
+
+  <section class="card" id="timelineCard">
+    <div class="card-head">
+      <div>
+        <h2>The night, UE by UE</h2>
+        <p class="sub">Times are the core host's local time, as written in the logs. Hover a mark for details; click a UE to jump to its verdict.</p>
+      </div>
+      <div class="legend" id="legend">
+        <span><i class="key" style="background:var(--c-data)"></i>Data reachable (ping)</span>
+        <span><i class="key" style="background:var(--c-call)"></i>Call with video</span>
+        <span><i class="key" style="background:var(--c-call-audio)"></i>Call, audio only</span>
+        <span><i class="key tick" style="background:var(--c-ran)"></i>gNB / radio event</span>
+        <span><i class="key band"></i>Core / IMS fault</span>
+        <span><i class="key dot" style="background:var(--ink)"></i>Drop, not the core</span>
+        <span><i class="key dot" style="background:var(--crit)"></i>Drop caused by core / IMS</span>
+      </div>
+    </div>
+    <div class="tl-scroll"><svg id="tl" role="img" aria-label="Timeline of each UE across the night"></svg></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Why each UE stopped</h2>
+        <p class="sub">One verdict per UE. The drop time comes from the last ping reply when you add ping logs, otherwise from when its call media stopped.</p>
+      </div>
+    </div>
+    <div class="ue-grid" id="ues"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Calls</h2>
+        <p class="sub">Who ended each call, when the video stopped, and whether the network had any part in it.</p>
+      </div>
+    </div>
+    <div class="tbl-scroll"><table class="tbl" id="calls"></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Core &amp; IMS health</h2>
+        <p class="sub">Faults are things the core or IMS did wrong. Warnings cost packets but did not end service on their own.</p>
+      </div>
+    </div>
+    <div class="health-grid">
+      <div class="findings" id="findings"></div>
+      <div class="bars" id="bars"></div>
+    </div>
+    <div class="tbl-scroll"><table class="tbl" id="components"></table></div>
+    <div id="pings"></div>
+  </section>
+
+  <section class="card method">
+    <h2>How the verdict is decided</h2>
+    <ol>
+      <li><b>Core or IMS is blamed</b> only for something it did: an NF crash or restart, SMF–UPF association loss, the UPF discarding packets (tun interface down), the network releasing a PDU session, a reject, or IMS ending a call that no phone hung up.</li>
+      <li><b>Phone detached</b>: the phone sent a NAS Deregistration Request (power-off, airplane mode, low battery).</li>
+      <li><b>Radio side</b>: the gNB released the UE, failed to set up its bearers, reset, or lost its N2 link, or the phone simply went silent while the gNB kept it "connected" and never told the core.</li>
+      <li><b>Calls</b> are judged by who sent the BYE and whether media was still arriving from each phone at that moment (from RTPEngine's per-stream last-packet times).</li>
+      <li><b>Not visible here</b>: gNB internals (RLF, scheduling, HARQ) and throughput. The core logs only show what reached the core. Ping logs tell when data actually stopped.</li>
+    </ol>
+  </section>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+<div class="dropzone" id="dropzone" hidden>Drop all.log and ping logs to analyse</div>
+
+<script src="analyzer.js"></script>
+<script src="sample-data.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (s, r) => (r || document).querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const hms = (t) => t == null ? '—' : new Date(t).toISOString().slice(11, 19);
+  const hm = (t) => t == null ? '—' : new Date(t).toISOString().slice(11, 16);
+  const day = (t) => { const d = new Date(t); return `${MON[d.getUTCMonth()]} ${d.getUTCDate()}`; };
+  const dayhm = (t) => t == null ? '—' : `${day(t)} ${hm(t)}`;
+  const dur = (ms) => { if (ms == null || ms < 0) return '—'; const s = Math.round(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : m ? `${m} min ${s % 60} s` : `${s} s`; };
+  const tail = (imsi) => imsi ? imsi.slice(-3) : '?';
+  const NS = 'http://www.w3.org/2000/svg';
+  const ICON = {
+    core: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3L3 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    ran: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 11V6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="6" cy="4.5" r="1.3" fill="currentColor"/><path d="M2.8 2a4.5 4.5 0 0 0 0 5M9.2 2a4.5 4.5 0 0 1 0 5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>',
+    ue: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="3.2" y="1" width="5.6" height="10" rx="1.3" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M5.2 9h1.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    ok: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.3l2.3 2.3 4.7-5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warn: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5l6 10.5H1z" fill="var(--warn)"/><path d="M7 5.5v3" stroke="#111" stroke-width="1.5" stroke-linecap="round"/><circle cx="7" cy="10.2" r=".85" fill="#111"/></svg>',
+    crit: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="var(--crit)"/><path d="M4.8 4.8l4.4 4.4M9.2 4.8L4.8 9.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    seal_ok: '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l7.5 3v6c0 4.6-3.2 8.3-7.5 10-4.3-1.7-7.5-5.4-7.5-10v-6z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M8.3 12.2l2.5 2.5 5-5.2" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    seal_bad: '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l7.5 3v6c0 4.6-3.2 8.3-7.5 10-4.3-1.7-7.5-5.4-7.5-10v-6z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M12 7.5v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.2" fill="currentColor"/></svg>'
+  };
+  function chipFor(v) {
+    if (!v) return '<span class="chip">Unknown</span>';
+    if (v.blame === 'core') return `<span class="chip core">${ICON.core}Core / IMS caused it</span>`;
+    if (v.status === 'dropped' && v.blame === 'ue') return `<span class="chip">${ICON.ue}Not the core · phone detached</span>`;
+    if (v.status === 'dropped') return `<span class="chip">${ICON.ran}Not the core · radio side</span>`;
+    if (v.status === 'nodata') return '<span class="chip warn">No data</span>';
+    return `<span class="chip ok">${ICON.ok}No drop</span>`;
+  }
+
+  const state = { result: null, analyzer: null, label: '', sample: false, ipMap: loadIpMap() };
+  function loadIpMap() { try { return JSON.parse(localStorage.getItem('coreAlibi.ipMap') || '{}'); } catch (e) { return {}; } }
+  function saveIpMap() { try { localStorage.setItem('coreAlibi.ipMap', JSON.stringify(state.ipMap)); } catch (e) { /* storage unavailable */ } }
+
+  /* ---------------- status + banner ---------------- */
+  function renderStatus(extra) {
+    const r = state.result, el = $('#status');
+    if (!r) { el.innerHTML = extra || ''; return; }
+    const m = r.meta;
+    el.innerHTML = `${state.sample ? '<span class="tag sample">Sample</span>' : '<span class="tag">Your log</span>'}
+      <span>${esc(state.label)}</span>
+      <span class="mono">${dayhm(m.start)} → ${dayhm(m.end)}</span>
+      <span class="muted">${m.lines.toLocaleString()} lines · ${(m.bytes / 1048576).toFixed(0)} MB</span>${extra || ''}`;
+  }
+  function renderBanner(r) {
+    const s = r.summary;
+    const crit = r.findings.filter((f) => f.sev === 'critical');
+    const guilty = crit.length > 0 || s.coreBlamed > 0;
+    const b = $('#banner');
+    b.className = 'banner ' + (guilty ? 'guilty' : 'clear');
+    const ranDrops = s.ueDrops.ran + s.ueDrops.ue;
+    const lede = guilty
+      ? `The core or IMS did something wrong in this run. ${crit.length} fault${crit.length === 1 ? '' : 's'} affected ${s.coreBlamed} UE or call verdict${s.coreBlamed === 1 ? '' : 's'}. Fix these before blaming the gNB.`
+      : `No core or IMS fault found. ${ranDrops ? `All ${ranDrops} UE drop${ranDrops === 1 ? '' : 's'} trace to the radio or phone side` : 'No UE dropped'}${s.callsEstablished ? `, and every call was ended by a phone, not the network` : ''}.`;
+    b.innerHTML = `
+      <div class="verdict">
+        <div class="seal">${guilty ? ICON.seal_bad : ICON.seal_ok}</div>
+        <div>
+          <h2>${guilty ? 'Core or IMS at fault' : 'Core and IMS are in the clear'}</h2>
+          <p class="lede">${esc(lede)}</p>
+          ${guilty ? `<ul class="faults">${crit.slice(0, 5).map((f) => `<li><span class="mono">${hm(f.t)}${f.end ? '–' + hm(f.end) : ''}</span> ${esc(f.title)}</li>`).join('')}${crit.length > 5 ? `<li>…and ${crit.length - 5} more below</li>` : ''}</ul>` : ''}
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>${s.ues}</b><span>UEs seen</span></div>
+        <div class="stat"><b>${s.drops}</b><span>UEs dropped</span></div>
+        <div class="stat"><b>${ranDrops}</b><span>radio / phone side</span></div>
+        <div class="stat ${s.coreBlamed ? 'bad' : ''}"><b>${s.coreBlamed}</b><span>caused by core / IMS</span></div>
+        <div class="stat"><b>${s.callsEstablished}</b><span>calls connected</span></div>
+        <div class="stat"><b>${s.callsVideoDropped}</b><span>lost video mid-call</span></div>
+        <div class="stat"><b>${s.coreWarnings}</b><span>core warnings</span></div>
+      </div>`;
+  }
+
+  /* ---------------- timeline ---------------- */
+  const RAN_KINDS = new Set(['gnb_release', 'setup_fail', 'rlf', 'qos_reject', 'gnb_lost', 'gnb_reset']);
+  function renderTimeline(r) {
+    const svg = $('#tl');
+    const box = svg.parentElement.clientWidth || 900;
+    const W = Math.max(680, box), L = 128, R = 18, TOP = 40, LANE = 46;
+    const ues = r.ues;
+    const H = TOP + Math.max(1, ues.length) * LANE + 10;
+    const t0 = r.meta.start, t1 = r.meta.end, span = Math.max(1, t1 - t0);
+    const x = (t) => L + ((Math.min(Math.max(t, t0), t1) - t0) / span) * (W - L - R);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('height', H);
+    const parts = [];
+    // hourly ticks
+    const hours = span / 3600000;
+    const step = (hours > 20 ? 3 : hours > 10 ? 2 : 1) * 3600000;
+    const first = Math.ceil(t0 / step) * step;
+    for (let t = first; t <= t1; t += step) {
+      const X = x(t);
+      parts.push(`<line class="grid" x1="${X}" x2="${X}" y1="${TOP - 8}" y2="${H - 6}"/>`);
+      const lab = new Date(t).getUTCHours() === 0 ? day(t) : hm(t);
+      parts.push(`<text class="axis-t" x="${X}" y="${TOP - 14}" text-anchor="middle">${lab}</text>`);
+    }
+    // global gNB events
+    const seenG = new Set();
+    for (const g of r.gnb.filter((g) => g.type === 'link_lost' || g.type === 'ng_reset')) {
+      const k = Math.floor(g.t / 60000); if (seenG.has(k)) continue; seenG.add(k);
+      const X = x(g.t), txt = g.type === 'ng_reset' ? 'gNB reset' : 'gNB link lost';
+      parts.push(`<g data-tip="${esc(txt)}|${hms(g.t)}|The gNB ${g.type === 'ng_reset' ? 'sent an NG Reset' : 'N2 (SCTP) link to the AMF went down'}. Everything after this line is cleanup."><line class="gnb" x1="${X}" x2="${X}" y1="${TOP - 4}" y2="${H - 6}"/><rect class="hit" x="${X - 5}" y="${TOP - 4}" width="10" height="${H - TOP}"/></g>`);
+      parts.push(`<text class="gnb-t" x="${X - 4}" y="${TOP - 26}" text-anchor="end">${txt}</text>`);
+    }
+    const crit = r.findings.filter((f) => f.sev === 'critical');
+    ues.forEach((u, i) => {
+      const y = TOP + i * LANE;
+      parts.push(`<line class="lane" x1="${L}" x2="${W - R}" y1="${y + LANE - 4}" y2="${y + LANE - 4}"/>`);
+      parts.push(`<a href="#ue-${u.imsi}"><text class="lbl-main" x="8" y="${y + 18}">…${esc(u.imsi.slice(-6))}</text><text class="lbl-sub" x="8" y="${y + 32}">${esc(u.msisdn[0] || '')}</text></a>`);
+      // core faults touching this UE
+      for (const f of crit) {
+        const own = f.imsi || f.affected;
+        if (own && !own.includes(u.imsi)) continue;
+        const a = x(f.t), b = Math.max(a + 3, x(f.end || f.t));
+        parts.push(`<rect class="fault" x="${a}" y="${y + 2}" width="${b - a}" height="${LANE - 10}" rx="3" data-tip="${esc(f.title)}|${hms(f.t)}${f.end ? '–' + hms(f.end) : ''}|${esc(f.detail)}"/>`);
+      }
+      // data reachability
+      if (u.last.ping) {
+        const a = x(t0), b = x(u.last.ping);
+        parts.push(`<rect class="data" x="${a}" y="${y + 8}" width="${Math.max(2, b - a)}" height="6" rx="3" data-tip="Data reachable|until ${hms(u.last.ping)}|Last ping reply (${esc(u.pingSource || '')})."/>`);
+      }
+      // calls
+      for (const c of r.calls) {
+        if (!c.established || (c.caller.imsi !== u.imsi && c.callee.imsi !== u.imsi)) continue;
+        const end = c.end || t1, a = x(c.start), b = Math.max(a + 2, x(end));
+        const other = c.caller.imsi === u.imsi ? c.callee : c.caller;
+        const tip = `Call ${c.caller.imsi === u.imsi ? 'to' : 'from'} ${esc(other.user || tail(other.imsi))}|${hms(c.start)}–${c.end ? hms(c.end) : 'end of log'}|${esc(c.headline)}`;
+        if (c.hadVideo) {
+          const vEnd = c.videoStop || end, v = Math.max(a + 2, x(vEnd));
+          parts.push(`<rect class="call" x="${a}" y="${y + 20}" width="${v - a}" height="8" rx="2" data-tip="${tip}"/>`);
+          if (v < b - 1) parts.push(`<rect class="call-a" x="${v}" y="${y + 20}" width="${b - v}" height="8" rx="2" data-tip="${tip}|${esc(c.videoReason || '')}"/>`);
+        } else parts.push(`<rect class="call-a" x="${a}" y="${y + 20}" width="${b - a}" height="8" rx="2" data-tip="${tip}"/>`);
+      }
+      // radio events
+      let lastX = -10;
+      for (const e of u.events) {
+        if (!RAN_KINDS.has(e.kind)) continue;
+        const X = x(e.t); if (X - lastX < 1.5) continue; lastX = X;
+        parts.push(`<g data-tip="${esc(e.label)}|${hms(e.t)}|${esc(e.detail || '')}"><line class="ran" x1="${X}" x2="${X}" y1="${y + 4}" y2="${y + 32}"/><rect class="hit" x="${X - 4}" y="${y + 2}" width="8" height="32"/></g>`);
+      }
+      // cleanup marks
+      for (const e of u.events) {
+        if (e.kind !== 'implicit_dereg' && e.kind !== 'ue_dereg') continue;
+        parts.push(`<circle class="cleanup" cx="${x(e.t)}" cy="${y + 24}" r="4.5" data-tip="${esc(e.label)}|${hms(e.t)}|${esc(e.detail || '')}"/>`);
+      }
+      // drop marker
+      const v = u.verdict;
+      if (v && v.dropT) {
+        const X = x(v.dropT);
+        parts.push(`<circle class="${v.blame === 'core' ? 'drop-core' : 'drop-ran'}" cx="${X}" cy="${y + 11}" r="6" data-tip="${esc(v.headline)}|${hms(v.dropT)} (${esc(v.dropBasis)})|${esc(v.reasons[0] || '')}"/>`);
+      }
+    });
+    svg.innerHTML = parts.join('');
+  }
+
+  /* ---------------- UE cards ---------------- */
+  function renderUEs(r) {
+    const order = (u) => (u.verdict.blame === 'core' ? 0 : u.verdict.status === 'dropped' ? 1 : u.verdict.status === 'nodata' ? 2 : 3);
+    const ues = r.ues.slice().sort((a, b) => order(a) - order(b) || (a.verdict.dropT || 9e15) - (b.verdict.dropT || 9e15));
+    $('#ues').innerHTML = ues.map((u) => {
+      const v = u.verdict;
+      const ipLine = Object.entries(u.ips).map(([k, x]) => `${esc(k)} ${esc(x.latest.join(', '))}${x.count > x.latest.length ? ` <span class="muted">(+${x.count - x.latest.length} earlier)</span>` : ''}`).join('<br>');
+      const facts = [];
+      if (v.dropT) facts.push(['Stopped', `${hms(v.dropT)} <span class="muted">${esc(v.dropBasis)}</span>`]);
+      if (u.last.ping && !v.dropT) facts.push(['Last ping', hms(u.last.ping)]);
+      if (u.last.media) facts.push(['Last call media', hms(u.last.media)]);
+      if (u.last.nas) facts.push(['Last radio event', hms(u.last.nas)]);
+      if (ipLine) facts.push(['IPs', ipLine]);
+      if (u.pingMappedBy === 'guessed from IP number') facts.push(['Ping IP', '<span class="muted">matched to this UE by number; change it under Ping logs</span>']);
+      const evRows = u.events.slice(-400).map((e) => {
+        const cls = e.sev === 'core' ? 'core-bad' : e.layer === 'ran' ? 'ran' : '';
+        return `<tr><td>${hms(e.t)}</td><td><span class="layer ${cls}">${esc(e.layer)}</span></td><td>${esc(e.label)}<div class="ev-detail">${esc(e.detail || '')}</div></td></tr>`;
+      }).join('');
+      return `<article class="ue ${v.blame === 'core' ? 'v-core' : ''}" id="ue-${esc(u.imsi)}">
+        <header>
+          <div><div class="imsi"><span>${esc(u.imsi.slice(0, -3))}</span><b>${esc(u.imsi.slice(-3))}</b></div><div class="msisdn">${esc(u.msisdn.join(' · ') || 'no number seen')}</div></div>
+          ${chipFor(v)}
+        </header>
+        <p class="headline">${esc(v.headline)}</p>
+        ${facts.length ? `<dl class="facts">${facts.map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join('')}</dl>` : ''}
+        ${v.reasons.length ? `<ul class="reasons">${v.reasons.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        <details><summary>All ${u.events.length} events</summary><div class="ev-scroll"><table class="events">${evRows || '<tr><td>—</td></tr>'}</table></div></details>
+      </article>`;
+    }).join('') || '<p class="muted">No UEs found in this log.</p>';
+  }
+
+  /* ---------------- calls ---------------- */
+  function renderCalls(r) {
+    const who = (p) => `<div class="who">${esc(p.user || '?')}<br><small>…${esc(tail(p.imsi))}${p.ip ? ' · ' + esc(p.ip) : ''}</small></div>`;
+    const rows = r.calls.map((c) => {
+      const ended = c.endedBy === 'phone' ? (c.byeFrom.length > 1 ? 'both phones' : c.byeFrom[0] === 'caller' ? 'caller' : 'callee') : c.endedBy === 'network' ? '<b style="color:var(--crit-ink)">network</b>' : c.endedBy === 'ongoing' ? 'still up' : '—';
+      const video = !c.hadVideo ? '<span class="muted">none</span>' : c.videoStop ? `stopped ${hms(c.videoStop)}${c.videoStopBy ? ` by ${esc(c.videoStopBy)}` : ''}` : 'until the end';
+      const chip = c.blame === 'core' ? `<span class="chip core">${ICON.core}Core / IMS</span>` : c.blame === 'none' ? `<span class="chip ok">${ICON.ok}Running</span>` : c.blame === 'unknown' ? '<span class="chip">Did not connect</span>' : `<span class="chip">${ICON.ran}Not the core</span>`;
+      const reasons = [c.videoReason && c.videoStop ? c.videoReason : null, ...c.reasons].filter(Boolean);
+      return `<tr>
+        <td class="num">${hms(c.start)}<br><span class="muted">${c.end ? '→ ' + hms(c.end) : '→ end of log'}</span><br><span class="muted">${c.end ? dur(c.end - c.start) : ''}</span></td>
+        <td>${who(c.caller)}</td><td>${who(c.callee)}</td>
+        <td class="num">${video}</td><td>${ended}</td><td>${chip}</td>
+        <td class="why"><b>${esc(c.headline)}</b>${reasons.length ? `<ul>${reasons.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</td>
+      </tr>`;
+    }).join('');
+    $('#calls').innerHTML = r.calls.length
+      ? `<thead><tr><th>Time</th><th>Caller</th><th>Callee</th><th>Video</th><th>Ended by</th><th>Verdict</th><th>Why</th></tr></thead><tbody>${rows}</tbody>`
+      : '<tbody><tr><td class="muted">No calls in this log.</td></tr></tbody>';
+  }
+
+  /* ---------------- health ---------------- */
+  function renderHealth(r) {
+    const f = r.findings;
+    const crit = f.filter((x) => x.sev === 'critical'), warn = f.filter((x) => x.sev === 'warning');
+    const item = (x) => `<div class="finding ${x.sev}"><span class="ic">${x.sev === 'critical' ? ICON.crit : ICON.warn}</span><b>${esc(x.title)}</b><p><span class="mono">${hms(x.t)}${x.end ? '–' + hms(x.end) : ''}</span> · ${esc(x.comp)} · ${esc(x.detail)}</p></div>`;
+    $('#findings').innerHTML = (crit.length ? crit.map(item).join('') : `<div class="ok-note">${ICON.ok} No core or IMS faults: no crashes, restarts, lost PFCP associations, dropped uplink, network-released sessions or network-ended calls.</div>`) + warn.map(item).join('');
+    // EAGAIN per hour
+    const e = r.series.eagainHourly;
+    if (e.length) {
+      const W = 520, H = 120, P = 26, max = Math.max(...e.map((d) => d.n));
+      const t0 = r.meta.start, span = Math.max(1, r.meta.end - t0);
+      const bw = Math.max(3, Math.min(22, ((W - P - 8) / Math.max(1, span / 3600000)) - 3));
+      const xs = (t) => P + ((t - t0) / span) * (W - P - 8 - bw);
+      const bars = e.map((d) => { const h = Math.max(2, (d.n / max) * (H - 36)); return `<rect class="b" x="${xs(d.t)}" y="${H - 18 - h}" width="${bw}" height="${h}" rx="2"><title>${hm(d.t)}: ${d.n}</title></rect>`; }).join('');
+      $('#bars').innerHTML = `<div><b style="font-weight:600">UPF downlink send failures per hour</b><div class="sub">EAGAIN on the GTP-U socket: packets dropped, sessions kept.</div></div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="UPF downlink send failures per hour">
+          <line x1="${P}" x2="${W - 4}" y1="${H - 18}" y2="${H - 18}" stroke="var(--axis)"/>
+          <text x="${P - 4}" y="${H - 18 - (H - 36) + 4}" text-anchor="end">${max}</text><text x="${P - 4}" y="${H - 16}" text-anchor="end">0</text>
+          ${bars}
+          <text x="${P}" y="${H - 4}">${hm(t0)}</text><text x="${W - 4}" y="${H - 4}" text-anchor="end">${hm(r.meta.end)}</text>
+        </svg>`;
+    } else $('#bars').innerHTML = '<p class="muted">No UPF downlink send failures.</p>';
+    // components
+    const comps = r.health.filter((h) => h.lines > 0);
+    $('#components').innerHTML = `<thead><tr><th>Component</th><th>Log lines</th><th>Restarts mid-run</th><th>Crashes</th><th>Errors</th><th>Most frequent error</th></tr></thead><tbody>${
+      comps.map((h) => `<tr><td><b>${esc(h.nf)}</b></td><td class="num">${h.lines.toLocaleString()}</td><td class="num" ${h.restartsMidRun ? 'style="color:var(--crit-ink);font-weight:600"' : ''}>${h.restartsMidRun}</td><td class="num" ${h.crashes ? 'style="color:var(--crit-ink);font-weight:600"' : ''}>${h.crashes}</td><td class="num">${h.errors.toLocaleString()}</td><td class="muted" style="max-width:52ch">${h.topErrors[0] ? esc(h.topErrors[0].template) + ` <span class="mono">×${h.topErrors[0].count}</span>` : '—'}</td></tr>`).join('')}</tbody>`;
+    renderPings(r);
+  }
+
+  function renderPings(r) {
+    const el = $('#pings');
+    if (!r.pings.length) { el.innerHTML = '<p class="sub">No ping logs added. Add <span class="mono">ping_&lt;ip&gt;.log</span> files to see exactly when data stopped for each UE.</p>'; return; }
+    const opts = (sel) => `<option value="">not mapped</option>` + r.ues.map((u) => `<option value="${esc(u.imsi)}" ${u.imsi === sel ? 'selected' : ''}>…${esc(u.imsi.slice(-6))} ${esc(u.msisdn[0] || '')}</option>`).join('');
+    el.innerHTML = `<h3 style="font-size:14px;margin-bottom:6px">Ping logs</h3><div class="tbl-scroll"><table class="tbl" style="min-width:560px"><thead><tr><th>IP</th><th>UE</th><th>Last reply</th><th>Taken from</th></tr></thead><tbody>${
+      r.pings.map((p) => `<tr><td class="num">${esc(p.ip)}</td><td>${state.analyzer ? `<select data-ip="${esc(p.ip)}" aria-label="UE for ${esc(p.ip)}">${opts(p.imsi)}</select>` : esc(p.imsi ? '…' + p.imsi.slice(-6) : 'not mapped')} <span class="muted">${esc(p.mappedBy || '')}</span></td><td class="num">${p.empty ? 'never replied' : hms(p.last)}</td><td class="muted">${esc(p.source || '')}</td></tr>`).join('')}</tbody></table></div>`;
+    el.querySelectorAll('select[data-ip]').forEach((s) => s.addEventListener('change', () => {
+      if (s.value) state.ipMap[s.dataset.ip] = s.value; else delete state.ipMap[s.dataset.ip];
+      saveIpMap();
+      state.result = state.analyzer.finish({ ipMap: state.ipMap });
+      renderAll();
+    }));
+  }
+
+  function renderAll() {
+    const r = state.result;
+    renderStatus(); renderBanner(r); renderTimeline(r); renderUEs(r); renderCalls(r); renderHealth(r);
+  }
+
+  /* ---------------- tooltip ---------------- */
+  const tip = $('#tip');
+  document.addEventListener('mousemove', (ev) => {
+    const t = ev.target.closest && ev.target.closest('#tl [data-tip]');
+    if (!t) { tip.hidden = true; return; }
+    const [title, when, ...rest] = t.getAttribute('data-tip').split('|');
+    tip.innerHTML = `<b>${esc(title)}</b><div class="t">${esc(when || '')}</div>${rest.filter(Boolean).map((x) => `<div>${esc(x)}</div>`).join('')}`;
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let X = ev.clientX + 14, Y = ev.clientY + 14;
+    if (X + w > innerWidth - 8) X = ev.clientX - w - 14;
+    if (Y + h > innerHeight - 8) Y = ev.clientY - h - 14;
+    tip.style.left = X + 'px'; tip.style.top = Y + 'px';
+  });
+
+  /* ---------------- loading files ---------------- */
+  async function handleFiles(files) {
+    const pingFiles = files.filter((f) => /ping/i.test(f.name));
+    const logs = files.filter((f) => !/ping/i.test(f.name));
+    try {
+      if (!logs.length) {
+        if (!state.analyzer) { renderStatus('<span class="err">Open all.log first (you can select the ping logs at the same time).</span>'); return; }
+        for (const p of pingFiles) state.analyzer.addPingFile(p.name, await p.text(), p.lastModified);
+        state.result = state.analyzer.finish({ ipMap: state.ipMap }); renderAll(); return;
+      }
+      const an = CoreAlibi.createAnalyzer();
+      const total = logs.reduce((n, f) => n + f.size, 0) || 1;
+      let done = 0;
+      const bar = () => `<div class="progress" aria-label="Reading logs"><i style="width:${Math.min(100, (done / total) * 100).toFixed(1)}%"></i></div>`;
+      state.result = null;
+      renderStatus(`<span>Reading ${esc(logs.map((f) => f.name).join(', '))}…</span>${bar()}`);
+      for (const f of logs) {
+        const base = done;
+        await CoreAlibi.analyzeBlob(an, f, (n) => { done = base + n; const i = $('#status .progress i'); if (i) i.style.width = Math.min(100, (done / total) * 100).toFixed(1) + '%'; });
+        done = base + f.size;
+      }
+      for (const p of pingFiles) an.addPingFile(p.name, await p.text(), p.lastModified);
+      state.analyzer = an; state.sample = false;
+      state.label = logs.map((f) => f.name).join(', ') + (pingFiles.length ? ` + ${pingFiles.length} ping log${pingFiles.length === 1 ? '' : 's'}` : '');
+      state.result = an.finish({ ipMap: state.ipMap });
+      if (!state.result.meta.lines || !state.result.meta.start) { renderStatus('<span class="err">No lines in the expected "[YYYY-MM-DD HH:MM:SS] [SOURCE] …" format were found. Is this the monitor script\'s all.log?</span>'); return; }
+      renderAll();
+    } catch (err) {
+      renderStatus(`<span class="err">Could not read the file: ${esc(err.message || err)}</span>`);
+    }
+  }
+  $('#file').addEventListener('change', (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) handleFiles(fs); });
+  const dz = $('#dropzone'); let depth = 0;
+  addEventListener('dragenter', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { depth++; dz.hidden = false; } });
+  addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) dz.hidden = true; });
+  addEventListener('dragover', (e) => e.preventDefault());
+  addEventListener('drop', (e) => { e.preventDefault(); depth = 0; dz.hidden = true; const fs = [...(e.dataTransfer ? e.dataTransfer.files : [])]; if (fs.length) handleFiles(fs); });
+  let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => state.result && renderTimeline(state.result), 120); });
+
+  /* ---------------- boot with the sample ---------------- */
+  if (window.CORE_ALIBI_SAMPLE) {
+    state.result = window.CORE_ALIBI_SAMPLE.result; state.label = window.CORE_ALIBI_SAMPLE.label; state.sample = true;
+    renderAll();
+  } else {
+    renderStatus('<span>Open an all.log to begin.</span>');
+  }
+})();
+</script>
+</body>
+</html>
