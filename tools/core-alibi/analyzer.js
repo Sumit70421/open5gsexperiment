@@ -54,9 +54,9 @@
       pendInit: null, pendRel: null, pendSpoof: null,
       ran: [], core: [], sessions: [], causes: [], qosRejects: [], smCtx: [], trig: [],
       lifecycle: [], pfcp: [], gnb: [], tun: [], eagain: [], spoof: [], errors: new Map(),
-      ipMap: [], msisdnMap: new Map(), lastImpu: null,
+      ipMap: [], ipLast: new Map(), msisdnVotes: new Map(), lastImpu: null,
       sip: [], coreSipIPs: new Set(), dialogs: new Map(), imsMarkers: [], imsTcp: [],
-      rtp: new Map(), pings: []
+      rtp: new Map(), pings: [], badUl: [], pendBad: null, pendNssai: null
     };
 
     function seen(key) {
@@ -79,7 +79,18 @@
       if (!m || MON[m[1]] === undefined) return S.prefixMs;
       return Date.UTC(S.prefixYear, MON[m[1]], +m[2], +m[3], +m[4], +m[5]);
     }
-    function mapIp(ip, imsi, t, via) { if (ip && imsi && ip !== '0.0.0.0') S.ipMap.push({ ip, imsi, t, via }); }
+    function mapIp(ip, imsi, t, via, dnn) {
+      if (!ip || !imsi || ip === '0.0.0.0') return;
+      // registrar dumps repeat every contact every few seconds: keep only changes
+      const k = ip + '|' + via;
+      if (via !== 'smf' && S.ipLast.get(k) === imsi) return;
+      S.ipLast.set(k, imsi); S.ipMap.push({ ip, imsi, t, via, dnn });
+    }
+    function vote(msisdn, imsi, w) {
+      let v = S.msisdnVotes.get(msisdn);
+      if (!v) { v = new Map(); S.msisdnVotes.set(msisdn, v); }
+      v.set(imsi, (v.get(imsi) || 0) + w);
+    }
     function addError(comp, level, msg, t) {
       const tpl = msg.replace(/\(\.\.\/[^)]*\)/g, '').replace(/imsi-\d+|suci-[\d-]+/g, '<UE>').replace(IP_RE, '<IP>')
         .replace(/0x[0-9a-f]+/gi, '<X>').replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 160);
@@ -91,7 +102,12 @@
 
     function onOpen5gs(nf, rest) {
       const m = /(\d\d)\/(\d\d) (\d\d):(\d\d):(\d\d)\.(\d{3}): \[([\w-]+)\] (\w+): (.*)$/.exec(rest);
-      if (!m) return;
+      if (!m) {
+        // hex dump that follows a UPF "Invalid packet" error (FILE and journal copies land on the same offset)
+        const hm = nf === 'UPF' && S.pendBad && /(?:^|: )([0-9a-f]{4}): ([0-9a-f]{2,8}(?: [0-9a-f]{2,8}){0,3})/.exec(rest);
+        if (hm && S.prefixMs - S.pendBad.t < 5000) S.pendBad.hex[hm[1]] = hm[2].replace(/ /g, '');
+        return;
+      }
       const payloadKey = nf + '|' + rest.slice(m.index);
       if (seen(payloadKey)) return;
       const t = Date.UTC(S.prefixYear, +m[1] - 1, +m[2], +m[3], +m[4], +m[5], +m[6]);
@@ -135,10 +151,21 @@
         const imsi = mm[1].startsWith('imsi') ? mm[1].slice(5) : imsiFromSuci(mm[1]);
         S.ran.push({ t, imsi, type: 'rlf' }); return;
       }
+      if ((mm = /^\[(suci-[^\]]+)\] (?:[Kk]nown|Unknown) UE by SUCI/.exec(body))) {
+        if (S.pendInit && t - S.pendInit.t <= 50 && !S.pendInit.imsi) { S.pendInit.imsi = imsiFromSuci(mm[1]); flushInit(); }
+        return;
+      }
       if (mod === 'gmm' && /^(Registration|Service) request$/.test(body)) {
-        const last = S.ran.length ? S.ran[S.ran.length - 1] : null;
-        if (last && last.type === 'reconnect' && t - last.t <= 50 && !last.kind) last.kind = body.startsWith('Reg') ? 'registration' : 'service';
+        let last = null; // an RLF line can sit between the reconnect and this line
+        for (let i = S.ran.length - 1; i >= Math.max(0, S.ran.length - 4); i--) if (S.ran[i].type === 'reconnect') { last = S.ran[i]; break; }
+        if (last && t - last.t <= 50 && !last.kind) last.kind = body.startsWith('Reg') ? 'registration' : 'service';
         else if (S.pendInit && t - S.pendInit.t <= 50) S.pendInit.kind = body.startsWith('Reg') ? 'registration' : 'service';
+        return;
+      }
+      if (/^Cannot find Requested NSSAI/.test(body)) { S.pendNssai = { t, snssai: [] }; return; }
+      if ((mm = /^S_NSSAI\[SST:(\d+)(?: SD:0x([0-9a-f]+))?\]/i.exec(body)) && S.pendNssai && t - S.pendNssai.t <= 50) {
+        const sn = `SST ${mm[1]}${mm[2] ? ' / SD 0x' + mm[2].padStart(6, '0') : ''}`;
+        if (!S.pendNssai.snssai.includes(sn)) S.pendNssai.snssai.push(sn);
         return;
       }
       if ((mm = /^\[imsi-(\d+)\] (?:De-?[Rr]egistration request)/.exec(body))) { S.ran.push({ t, imsi: mm[1], type: 'ue_dereg' }); return; }
@@ -167,7 +194,10 @@
       if ((mm = /LOCAL \[[^\]]+\] Timezone\[(-?\d+)\]/.exec(body))) { S.tzOffsetSec = +mm[1]; return; }
       if (/reject/i.test(body) && !/Unsuccessful/.test(body)) {
         const im = /imsi-(\d+)/.exec(body), sm = /(suci-[\d-]+)/.exec(body);
-        S.core.push({ t, imsi: im ? im[1] : sm ? imsiFromSuci(sm[1]) : null, type: 'reject', text: body });
+        const cm = /(Registration|Service) reject \[(\d+)\]/.exec(body);
+        const ns = S.pendNssai && t - S.pendNssai.t <= 50 ? S.pendNssai.snssai : null;
+        S.core.push({ t, imsi: im ? im[1] : sm ? imsiFromSuci(sm[1]) : null, type: 'reject', text: body,
+          proc: cm ? cm[1] : null, cause: cm ? +cm[2] : null, snssai: ns && ns.length ? ns : null });
       }
     }
     function flushInit() {
@@ -179,10 +209,10 @@
       let mm;
       if ((mm = /Cause\[Group:(\d+) Cause:(\d+)\]/.exec(body))) { S.causes.push({ t, g: +mm[1], c: +mm[2] }); return; }
       if ((mm = /UE SUPI\[imsi-(\d+)\] DNN\[([^\]]+)\] IPv4\[([\d.]*)\]/.exec(body))) {
-        S.sessions.push({ t, imsi: mm[1], dnn: mm[2], ip: mm[3], up: true }); mapIp(mm[3], mm[1], t, 'smf'); return;
+        S.sessions.push({ t, imsi: mm[1], dnn: mm[2], ip: mm[3], up: true }); mapIp(mm[3], mm[1], t, 'smf', mm[2]); return;
       }
       if ((mm = /Removed Session: UE IMSI:\[imsi-(\d+)\] DNN:\[([^:\]]+):(\d+)\] IPv4:\[([\d.]*)\]/.exec(body))) {
-        S.sessions.push({ t, imsi: mm[1], dnn: mm[2], psi: +mm[3], ip: mm[4], up: false }); mapIp(mm[4], mm[1], t, 'smf'); return;
+        S.sessions.push({ t, imsi: mm[1], dnn: mm[2], psi: +mm[3], ip: mm[4], up: false }); mapIp(mm[4], mm[1], t, 'smf', mm[2]); return;
       }
       if ((mm = /^\[imsi-(\d+):(\d+)\] Session Release \[PFCP-Delete-Trigger:(\d+)\]/.exec(body))) {
         S.trig.push({ t, imsi: mm[1], psi: +mm[2], trigger: +mm[3] });
@@ -193,6 +223,9 @@
       let mm;
       if (/ogs_tun_write\(\) failed/.test(body)) { S.tun.push(t); return; }
       if (/ogs_sendto\(\) failed \(11:/.test(body)) { S.eagain.push(t); return; }
+      if ((mm = /^Invalid packet \[IP version:(\d+), Packet Length:(\d+)\]/.exec(body))) {
+        S.pendBad = { t, ver: +mm[1], len: +mm[2], hex: {} }; S.badUl.push(S.pendBad); return;
+      }
       if ((mm = /Source IP-4 Spoofing APN:(\S+)/.exec(body))) { S.pendSpoof = { t, apn: mm[1] }; return; }
       if ((mm = /SRC:([0-9A-F]{8}), UE:([0-9A-F]{8})/.exec(body)) && S.pendSpoof) {
         S.spoof.push({ t: S.pendSpoof.t, apn: S.pendSpoof.apn, src: hexIp(mm[1]), ue: hexIp(mm[2]) }); S.pendSpoof = null;
@@ -216,7 +249,8 @@
           if (mm) {
             if (isImsi(mm[1])) {
               mapIp(mm[2], mm[1], S.prefixMs, 'ims-contact');
-              if (S.lastImpu && !isImsi(S.lastImpu)) S.msisdnMap.set(S.lastImpu, mm[1]);
+              // the registrar dump interleaves records across processes, so pairings are only votes
+              if (S.lastImpu && !isImsi(S.lastImpu)) vote(S.lastImpu, mm[1], 1);
             }
           }
           return;
@@ -323,39 +357,102 @@
   }
 
   /* ------------------------------------------------------------------ */
-  function buildResult(S, opts) {
+  // A log can span several test runs (gNB restarts, core restarts, days of idle).
+  // Runs are cut at NG Reset / N2 loss / N2 setup and at core restarts.
+  function detectRuns(S) {
+    if (S.start === null) return [];
+    const cuts = [];
+    for (const g of S.gnb) {
+      if (g.type === 'ng_reset' || g.type === 'link_lost') cuts.push({ t: g.t + 5000, why: g.type === 'ng_reset' ? 'gNB reset' : 'gNB link lost' });
+      else if (g.type === 'link_up') cuts.push({ t: g.t, why: `gNB ${g.ip} connected` });
+    }
+    const starts = S.lifecycle.filter((l) => l.kind === 'start' && l.t > S.start + 90000).map((l) => l.t).sort((a, b) => a - b);
+    for (let i = 0; i < starts.length; i++) if (!i || starts[i] - starts[i - 1] > 30000) cuts.push({ t: starts[i], why: 'core restart' });
+    cuts.sort((a, b) => a.t - b.t);
+    const busy = (a, b) => S.ran.some((x) => x.t >= a && x.t < b) || S.sip.some((x) => x.t >= a && x.t < b) || S.sessions.some((x) => x.t >= a && x.t < b);
+    const runs = []; let from = S.start, fromWhy = 'log start';
+    for (const c of [...cuts, { t: S.end + 1, why: 'log end' }]) {
+      const to = Math.min(c.t, S.end);
+      if (to - from >= 10 * 60000 && busy(from, to)) runs.push({ from, to, startsWith: fromWhy, endsWith: c.why });
+      if (c.t > from) { from = c.t; fromWhy = c.why; }
+    }
+    return runs;
+  }
+  function pickWindow(S, runs, opts) {
+    if (opts.window === 'all') return null;
+    if (opts.window && opts.window.from != null) return { from: opts.window.from, to: opts.window.to };
+    if (runs.length < 2) return null;
+    const longest = runs.slice().sort((a, b) => (b.to - b.from) - (a.to - a.from))[0];
+    return (longest.to - longest.from) >= 0.8 * (S.end - S.start) ? null : { from: longest.from, to: longest.to };
+  }
+  function windowState(S, w) {
+    const inW = (t) => t >= w.from && t <= w.to;
+    const f = (arr) => arr.filter((x) => inW(typeof x === 'number' ? x : x.t));
+    const W = Object.assign({}, S, { start: Math.max(S.start, w.from), end: Math.min(S.end, w.to) });
+    for (const k of ['ran', 'core', 'sessions', 'causes', 'qosRejects', 'smCtx', 'trig', 'lifecycle', 'pfcp', 'gnb', 'tun', 'eagain', 'spoof', 'sip', 'imsMarkers', 'imsTcp', 'badUl']) W[k] = f(S[k]);
+    W.rtp = new Map([...S.rtp].filter(([, c]) => inW(c.created) || (c.statsT && inW(c.statsT))));
+    W.dialogs = new Map([...S.dialogs].filter(([, d]) => d.last >= w.from && d.first <= w.to));
+    return W;
+  }
+  const GMM_CAUSE = { 3: 'illegal UE', 5: 'PEI not accepted', 6: 'illegal ME', 7: '5GS services not allowed', 9: 'UE identity cannot be derived',
+    10: 'implicitly deregistered', 11: 'PLMN not allowed', 12: 'tracking area not allowed', 13: 'roaming not allowed in this area',
+    15: 'no suitable cells in tracking area', 22: 'congestion', 27: 'N1 mode not allowed', 62: 'no network slices available',
+    65: 'maximum number of PDU sessions reached', 111: 'protocol error' };
+
+  function buildResult(S0, opts) {
+    const runs = detectRuns(S0);
+    const win = pickWindow(S0, runs, opts);
+    const S = win ? windowState(S0, win) : S0;
     const logStart = S.start, logEnd = S.end;
     const tz = S.tzOffsetSec !== null ? S.tzOffsetSec : (opts.tzOffsetSec !== undefined ? opts.tzOffsetSec : 0);
     const wallFromEpoch = (e) => e + tz * 1000;
-    const fmt = (t) => t == null ? '—' : new Date(t).toISOString().slice(11, 19);
+    const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const multiDay = S.end - S.start > 20 * 3600000; // runs longer than a night get dates in the text
+    const fmt = (t) => {
+      if (t == null) return '—';
+      const d = new Date(t);
+      return (multiDay ? `${MONS[d.getUTCMonth()]} ${d.getUTCDate()} ` : '') + d.toISOString().slice(11, 19);
+    };
 
     // ---- IP -> IMSI (time-aware) ----
     // SMF session records are authoritative; REGISTER next; S-CSCF contacts last (they can be stale for days)
+    const VIAS = ['smf', 'register', 'ims-contact'];
     const ipHist = new Map();
-    for (const r of S.ipMap) { if (!ipHist.has(r.ip)) ipHist.set(r.ip, []); ipHist.get(r.ip).push(r); }
-    for (const v of ipHist.values()) v.sort((a, b) => a.t - b.t);
+    for (const r of S.ipMap) {
+      let h = ipHist.get(r.ip);
+      if (!h) { h = { smf: [], register: [], 'ims-contact': [], first: r }; ipHist.set(r.ip, h); }
+      h[r.via].push(r); if (r.t < h.first.t) h.first = r;
+    }
+    for (const h of ipHist.values()) for (const v of VIAS) h[v].sort((a, b) => a.t - b.t);
     function imsiForIp(ip, t) {
       const h = ipHist.get(ip); if (!h) return null;
       const q = t || Infinity;
-      for (const via of ['smf', 'register', 'ims-contact']) {
-        const xs = h.filter((r) => r.via === via);
-        if (!xs.length) continue;
-        let best = null;
-        for (const r of xs) { if (r.t <= q) best = r; else break; }
-        if (best) return best.imsi;
+      for (const via of VIAS) {
+        const xs = h[via];
+        if (!xs.length || xs[0].t > q) continue;
+        let lo = 0, hi = xs.length - 1; // last record at or before q
+        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (xs[mid].t <= q) lo = mid; else hi = mid - 1; }
+        return xs[lo].imsi;
       }
-      return h[0].imsi;
+      return h.first.imsi;
     }
     // UE IPs = P-CSCF request sources that never appear as S-CSCF/I-CSCF sources
     const ueIPs = new Set();
     for (const r of S.sip) if (!S.coreSipIPs.has(r.srcIp) && r.srcIp !== '127.0.0.1') ueIPs.add(r.srcIp);
+    // MSISDN -> IMSI: a request the phone itself sent (its number in From, its session IP as source) outweighs
+    // any number of registrar-dump pairings
+    const votes = new Map([...S.msisdnVotes].map(([k, v]) => [k, new Map(v)]));
     for (const r of S.sip) {
-      if (!ueIPs.has(r.srcIp)) continue;
-      if (r.fromUser && !isImsi(r.fromUser) && (r.method === 'INVITE' || r.method === 'UPDATE' || r.method === 'BYE')) {
-        const im = imsiForIp(r.srcIp, r.t); if (im && !S.msisdnMap.has(r.fromUser)) S.msisdnMap.set(r.fromUser, im);
-      }
+      if (!ueIPs.has(r.srcIp) || !r.fromUser || isImsi(r.fromUser)) continue;
+      const im = imsiForIp(r.srcIp, r.t);
+      if (!im) continue;
+      let v = votes.get(r.fromUser);
+      if (!v) { v = new Map(); votes.set(r.fromUser, v); }
+      v.set(im, (v.get(im) || 0) + 1000);
     }
-    const imsiForUser = (u) => !u ? null : isImsi(u) ? u : (S.msisdnMap.get(u) || null);
+    const msisdnMap = new Map();
+    for (const [ms, v] of votes) msisdnMap.set(ms, [...v].sort((a, b) => b[1] - a[1])[0][0]);
+    const imsiForUser = (u) => !u ? null : isImsi(u) ? u : (msisdnMap.get(u) || null);
 
     // ---- UEs ----
     const ues = new Map();
@@ -368,11 +465,12 @@
       }
       return u;
     }
-    for (const [ms, im] of S.msisdnMap) { const u = ue(im); if (!u.msisdn.includes(ms)) u.msisdn.push(ms); }
+    for (const [ms, im] of msisdnMap) { const u = ue(im); if (!u.msisdn.includes(ms)) u.msisdn.push(ms); }
+    const dnnOf = new Map();
+    for (const r of S0.ipMap) if (r.dnn) dnnOf.set(r.ip + '|' + r.imsi, r.dnn);
     for (const r of S.ipMap) {
-      const u = ue(r.imsi); const dnn = r.via === 'smf' ? null : 'ims';
-      const s = S.sessions.find((x) => x.ip === r.ip && x.imsi === r.imsi);
-      const key = s ? s.dnn : (dnn || 'ims');
+      const u = ue(r.imsi);
+      const key = r.dnn || dnnOf.get(r.ip + '|' + r.imsi) || 'ims';
       u.ips[key] = u.ips[key] || [];
       if (!u.ips[key].includes(r.ip)) u.ips[key].push(r.ip);
     }
@@ -402,7 +500,8 @@
         if (r.action === 1) continue;
         const sf = setupFails.find((f) => f.imsi === r.imsi && r.t - f.t >= 0 && r.t - f.t <= 2000);
         const dr = S.ran.find((x) => x.type === 'ue_dereg' && x.imsi === r.imsi && r.t - x.t >= 0 && r.t - x.t <= 2000);
-        if (dr) continue;
+        const rj = S.core.find((x) => x.type === 'reject' && x.imsi === r.imsi && r.t - x.t >= 0 && r.t - x.t <= 2000);
+        if (dr || rj) continue; // the AMF ended the connection after a detach or a reject; not a gNB decision
         const c = sf ? nearestCause(sf.t) : null;
         ev(r.imsi, { t: r.t, layer: 'ran', kind: 'gnb_release', sev: 'ran', label: sf ? 'gNB released the UE after a failed bearer setup' : 'Released to idle by the gNB',
           detail: sf ? (c ? causeText(c.g, c.c) : 'setup failure') : 'UE Context Release (radio connection ended)' });
@@ -418,30 +517,69 @@
       const seenKey = new Set();
       u.events = u.events.filter((e) => { if (e.kind !== 'gnb_lost' && e.kind !== 'gnb_reset') return true; const k = e.kind + Math.floor(e.t / 1000); if (seenKey.has(k)) return false; seenKey.add(k); return true; });
     }
+    const rejectRuns = new Map(); // imsi|cause|slice -> latest collapsed reject event
+    const rejectList = [];        // every collapsed reject event, with its UE
     for (const c of S.core) {
+      if (!c.imsi) continue;
+      if (c.type === 'reject') {
+        const key = `${c.imsi}|${c.cause}|${c.snssai ? c.snssai.join(',') : ''}`;
+        const prev = rejectRuns.get(key);
+        if (prev && c.t - prev.lastT <= 30 * 60000) { prev.count++; prev.lastT = c.t; continue; }
+        const what = c.proc ? `${c.proc.toLowerCase()}` : 'a request';
+        const e = { t: c.t, layer: 'core', kind: 'reject', sev: 'core', count: 1, lastT: c.t, cause: c.cause, snssai: c.snssai, proc: c.proc,
+          label: `Core refused ${what}${c.cause != null ? ` (5GMM #${c.cause}${GMM_CAUSE[c.cause] ? ' ' + GMM_CAUSE[c.cause] : ''})` : ''}`,
+          detail: c.snssai ? `The phone asked for slice ${c.snssai.join(', ')}, which this core does not serve. The phone is still using a slice list from another network.` : c.text || 'reject' };
+        rejectRuns.set(key, e); rejectList.push([c.imsi, e]); ev(c.imsi, e); continue;
+      }
       const map = { mobile_unreachable: ['Core marked the UE unreachable', 'Mobile reachable timer expired (no contact since the UE went idle)'],
         implicit_dereg: ['Core deregistered the UE (implicit)', 'Implicit deregistration after the UE stayed unreachable'],
         net_dereg: ['Core started network deregistration', 'Network-initiated deregistration'],
-        paging_failed: ['Paging failed', 'Downlink data was waiting but the UE did not answer paging'],
-        reject: ['Core rejected a request', c.text || 'reject'] }[c.type];
-      if (c.imsi) ev(c.imsi, { t: c.t, layer: 'core', kind: c.type, sev: c.type === 'reject' ? 'core' : 'info', label: map[0], detail: map[1] });
+        paging_failed: ['Paging failed', 'Downlink data was waiting but the UE did not answer paging'] }[c.type];
+      ev(c.imsi, { t: c.t, layer: 'core', kind: c.type, sev: 'info', label: map[0], detail: map[1] });
     }
+    for (const [, e] of rejectList) if (e.count > 1) { e.label += ` ×${e.count}`; e.detail += ` Repeated ${e.count} times until ${fmt(e.lastT)}.`; }
+
+    // ---- NF restarts: an operator's systemctl restart (SIGTERM first) vs an unexpected one ----
+    const warmup = logStart + 90 * 1000;
+    const restarts = [];
+    for (const l of S.lifecycle) {
+      if (l.kind !== 'start' || l.t <= warmup) continue;
+      const planned = S0.lifecycle.some((x) => x.nf === l.nf && x.kind === 'stop' && l.t - x.t >= 0 && l.t - x.t <= 120000);
+      let g = restarts.find((r) => r.planned === planned && l.t - r.end <= 30000 && r.t - l.t <= 30000);
+      if (!g) { g = { t: l.t, end: l.t, nfs: [], planned, affected: new Set() }; restarts.push(g); }
+      if (!g.nfs.includes(l.nf)) g.nfs.push(l.nf);
+      g.t = Math.min(g.t, l.t); g.end = Math.max(g.end, l.t);
+    }
+    const restartAt = (t) => restarts.find((g) => t >= g.t - 10000 && t <= g.end + 10000);
 
     // ---- sessions & network-initiated releases ----
     const findings = [];
-    const sessionsByImsi = new Map();
     for (const s of S.sessions) {
       if (s.up) { ev(s.imsi, { t: s.t, layer: 'core', kind: 'session_up', sev: 'info', label: `${s.dnn} session up`, detail: `IP ${s.ip}` }); continue; }
       const near = (arr, pred, win) => arr.find((x) => pred(x) && s.t - x.t >= -win && s.t - x.t <= win);
       let why = null, blame = false;
+      const rs = restartAt(s.t);
       if (near(S.smCtx, (x) => x.imsi === s.imsi && x.psi === s.psi && x.state === 'N1-RELEASED', 5000)) why = 'released by the phone';
       else if (near(S.smCtx, (x) => x.imsi === s.imsi && x.psi === s.psi && /^REL3[234]$/.test(x.state), 3000)) why = 'dropped by the phone: it reported the session as gone when it reconnected';
+      else if (near(S.smCtx, (x) => x.imsi === s.imsi && x.psi === s.psi && x.state === 'REL31', 3000)
+        && near(S.ran, (x) => x.imsi === s.imsi && x.type === 'reconnect' && x.kind === 'registration', 3000)) why = 'cleared because the phone registered again from scratch (it had already dropped this session)';
       else if (near(S.smCtx, (x) => x.imsi === s.imsi && x.psi === s.psi && x.state === 'DUPLICATED_PDU_SESSION_ID', 3000)) why = 'replaced: the phone re-sent the session request';
       else if (near(S.core, (x) => x.imsi === s.imsi && /dereg/.test(x.type), 3000)) why = 'removed during deregistration';
       else if (near(S.ran, (x) => x.imsi === s.imsi && x.type === 'ue_dereg', 3000)) why = 'removed because the phone detached';
+      else if (rs) { why = rs.planned ? 'dropped because the core was restarted by an operator' : 'dropped because core NFs restarted'; blame = true; rs.affected.add(s.imsi); }
       else { const tr = near(S.trig, (x) => x.imsi === s.imsi && x.psi === s.psi, 3000); why = tr ? `released by the network (PFCP delete trigger ${tr.trigger})` : 'released by the network'; blame = true; }
       ev(s.imsi, { t: s.t, layer: 'core', kind: blame ? 'session_down_net' : 'session_down', sev: blame ? 'core' : 'info', label: `${s.dnn} session removed`, detail: `${s.ip || ''} — ${why}` });
-      if (blame) findings.push({ t: s.t, sev: 'critical', comp: 'SMF', title: `Network released ${s.dnn} session of ${s.imsi}`, detail: `${why}; IP ${s.ip}`, imsi: [s.imsi] });
+      if (blame && !rs) findings.push({ t: s.t, sev: 'critical', comp: 'SMF', title: `Network released ${s.dnn} session of ${s.imsi}`, detail: `${why}; IP ${s.ip}`, imsi: [s.imsi] });
+    }
+
+    // ---- registration rejects: one finding per UE and cause ----
+    for (const [imsi, e] of rejectList) {
+      const laterOk = S.ran.some((x) => x.type === 'reg_complete' && x.imsi === imsi && x.t > e.lastT);
+      e.laterOk = laterOk;
+      findings.push({ t: e.t, end: e.lastT > e.t ? e.lastT : undefined, sev: laterOk ? 'warning' : 'critical', comp: 'AMF', imsi: [imsi],
+        title: `AMF refused ${e.proc ? e.proc.toLowerCase() : 'service'} for …${imsi.slice(-3)}${e.cause != null ? ` (5GMM #${e.cause}${GMM_CAUSE[e.cause] ? ' ' + GMM_CAUSE[e.cause] : ''})` : ''}${e.count > 1 ? ` ×${e.count}` : ''}`,
+        detail: (e.snssai ? `It asks for slice ${e.snssai.join(', ')}, which is not configured on this core. Add that slice to amf.yaml and the subscriber, or clear the phone's stored slices (reset network settings or re-insert the SIM).` : e.detail)
+          + (laterOk ? ' It registered successfully later.' : ' It never registered in this run, so it had no data or IMS service.') });
     }
 
     // ---- UE death evidence from IMS TCP timeouts ----
@@ -454,6 +592,27 @@
       if (im) ev(im, { t: x.t, layer: 'core', kind: 'spoof', sev: 'warn', label: 'UPF dropped packets from a stale IP', detail: `Phone sent from ${x.src} but its session IP is now ${x.ue} (${x.apn})` });
     }
 
+    // ---- uplink the UPF could not parse: what the gNB put in the GTP-U tunnel ----
+    const knownUeIp = (ip, t) => ip && ipHist.has(ip) ? imsiForIp(ip, t) : null;
+    let badDl = 0;
+    for (const b of S.badUl) {
+      const bytes = Object.keys(b.hex).sort().map((k) => b.hex[k]).join('').match(/../g) || [];
+      const v4 = bytes.findIndex((x, i) => i < 16 && x === '45');
+      let src = null, dst = null, prefix = '';
+      if (v4 >= 0 && bytes.length >= v4 + 20) {
+        const ip = (o) => bytes.slice(v4 + o, v4 + o + 4).map((x) => parseInt(x, 16)).join('.');
+        src = ip(12); dst = ip(16); prefix = bytes.slice(0, v4).join('');
+      }
+      const dlCopy = dst && knownUeIp(dst, b.t) && !knownUeIp(src, b.t);
+      if (dlCopy) badDl++;
+      const im = dlCopy ? knownUeIp(dst, b.t) : knownUeIp(src, b.t);
+      const detail = `The UPF dropped a ${b.len}-byte uplink packet it could not parse (IP version ${b.ver}). `
+        + (dlCopy ? `It was ${prefix ? `a ${prefix.length / 2}-byte header (${prefix}) plus ` : ''}a cut-off copy of a downlink packet ${src} → ${dst}: the gNB put downlink data into this UE's uplink tunnel.`
+          : src ? `Inner packet ${src} → ${dst}${prefix ? ` behind a ${prefix.length / 2}-byte header (${prefix})` : ''}.` : 'No hex dump was logged.');
+      b.imsi = im; b.detail = detail;
+      if (im) ev(im, { t: b.t, layer: 'ran', kind: 'gnb_bad_ul', sev: 'ran', label: 'gNB sent a corrupted uplink packet', detail });
+    }
+
     // ---- core health: lifecycle, PFCP, tun, EAGAIN ----
     const episodes = (arr, gapMs) => {
       const out = []; let cur = null;
@@ -462,12 +621,18 @@
       }
       return out;
     };
-    const warmup = logStart + 90 * 1000;
     const nfTimeline = {};
     for (const l of S.lifecycle) {
       (nfTimeline[l.nf] = nfTimeline[l.nf] || []).push(l);
       if (l.kind === 'crash') findings.push({ t: l.t, sev: 'critical', comp: l.nf, title: `${l.nf} crashed`, detail: l.text || 'FATAL' });
-      else if (l.kind === 'start' && l.t > warmup) findings.push({ t: l.t, sev: 'critical', comp: l.nf, title: `${l.nf} restarted during the run`, detail: 'Process initialised again; sessions it held were lost' });
+    }
+    for (const g of restarts) {
+      const list = g.nfs.join(', ');
+      findings.push({ t: g.t, end: g.end > g.t ? g.end : undefined, sev: 'critical', comp: g.nfs.length > 2 ? 'Core' : list,
+        affected: g.affected.size ? [...g.affected] : undefined,
+        title: g.planned ? `Core restarted by an operator (${g.nfs.length} NF${g.nfs.length === 1 ? '' : 's'})` : `${list} restarted unexpectedly`,
+        detail: (g.planned ? `systemd stopped and started ${list} (SIGTERM first, so not a crash).` : `${list} initialised again without being stopped first (crash and auto-restart).`)
+          + (g.affected.size ? ` It dropped the PDU sessions of ${[...g.affected].map((i) => '…' + i.slice(-3)).join(', ')}.` : ' Sessions and registrations held in memory were lost.') });
     }
     for (const p of S.pfcp) {
       if (!p.up && p.t > warmup && !S.lifecycle.some((l) => l.kind === 'stop' && Math.abs(l.t - p.t) < 5000)) {
@@ -503,6 +668,13 @@
         detail: `${S.eagain.length} GTP-U sends failed with EAGAIN across the run. Short bursts cause packet loss, not disconnections. Raising net.core.wmem_default/wmem_max reduces them.`, count: S.eagain.length });
     }
     if (S.spoof.length) findings.push({ t: S.spoof[0].t, sev: 'warning', comp: 'UPF', title: 'UPF dropped packets sent from stale UE IPs', detail: `${S.spoof.length} packets: the phone kept using an old IP after its session was re-created`, count: S.spoof.length });
+    if (S.badUl.length) {
+      const who = [...new Set(S.badUl.map((b) => b.imsi).filter(Boolean))].map((i) => '…' + i.slice(-3));
+      findings.push({ t: S.badUl[0].t, end: S.badUl[S.badUl.length - 1].t, sev: 'warning', comp: 'gNB', notCore: true, count: S.badUl.length,
+        title: `gNB sent ${S.badUl.length} corrupted uplink packet${S.badUl.length === 1 ? '' : 's'} (a gNB fault; the UPF dropped them)`,
+        detail: (badDl ? `${badDl} of them were cut-off copies of downlink packets put into the uplink tunnel` : 'The UPF could not parse them as IP')
+          + (who.length ? ` (${who.join(', ')})` : '') + '. The core only rejected what it received; the corruption happened in the gNB data path.' });
+    }
     for (const m of S.imsMarkers) findings.push({ t: m.t, sev: 'critical', comp: m.node, title: 'IMS tore down a dialog', detail: m.text });
 
     // ---- calls ----
@@ -532,7 +704,13 @@
         return { audio: agg(a), video: agg(v) };
       };
       const A = side(callerIp), B = side(calleeIp);
-      const established = !!dlg || !!(A && A.audio && A.audio.packets > 20 && B && B.audio && B.audio.packets > 20);
+      // A re-INVITE (R-URI is the other phone's contact) as the first message: the call was already up when the log began
+      const startedBefore = !!(first.ruriIp && ueIPs.has(first.ruriIp));
+      const pk = (m) => (m && m.audio ? m.audio.packets : 0) + (m && m.video ? m.video.packets : 0);
+      // RTPEngine's final stats are the proof of an answered call. Without them: a BYE, an RTPEngine delete, or a
+      // dialog still up at the end of the log (a dialog that merely lived a while may just have been ringing)
+      const established = startedBefore || (rtp && rtp.statsT ? pk(A) + pk(B) > 20
+        : byes.some((b) => b.method === 'BYE') || !!(rtp && rtp.del) || (!!dlg && dlg.last >= logEnd - 30000 && dlg.last - dlg.first > 20000));
       let end = null, endedBy = 'ongoing', byeFrom = [];
       if (byes.length) {
         end = byes[0].t; byeFrom = byes.filter((b) => b.t - end <= 3000).map((b) => b.srcIp === callerIp ? 'caller' : b.srcIp === calleeIp ? 'callee' : b.srcIp);
@@ -541,7 +719,11 @@
         const cands = [dlg && dlg.last < logEnd - 30000 ? dlg.last : null, rtp && rtp.del, rtp && rtp.timeoutClose].filter(Boolean);
         if (cands.length) { end = Math.min(...cands); endedBy = 'network'; }
       }
-      const call = { cid, start: first.t, end, endedBy, byeFrom, established,
+      if (!established) {
+        if (end) end = Math.min(end, Math.max(first.t, dlg ? dlg.last : first.t));
+        endedBy = byes.length ? 'cancelled' : 'unanswered';
+      }
+      const call = { cid, start: first.t, end, endedBy, byeFrom, established, startedBefore,
         caller: { imsi: callerImsi, ip: callerIp, user: first.fromUser, media: A },
         callee: { imsi: calleeImsi, ip: calleeIp, user: first.toUser, media: B },
         hadVideo: !!((A && A.video && A.video.packets > 50) || (B && B.video && B.video.packets > 50)),
@@ -586,9 +768,17 @@
           c.videoBlame = cf.length ? 'core' : 'ran';
         }
       }
+      if (c.startedBefore) reasons.push('This call was already up when the log begins (its first message here is a re-INVITE), so caller and callee may be the other way round.');
       if (!c.established) {
         headline = 'Call did not connect'; blame = 'unknown';
-        reasons.push(c.byeFrom.length ? `${c.byeFrom.join(' & ')} cancelled before it connected` : 'No media was exchanged; the rejection code is not in these logs');
+        const dl = S.dialogs.get(c.cid);
+        const rang = dl && dl.last - dl.first > 20000 ? Math.round((dl.last - dl.first) / 1000) : 0;
+        reasons.push(c.byeFrom.length ? `${c.byeFrom.join(' & ')} cancelled before it connected`
+          : rang ? `It rang for about ${rang} s and was never answered; the INVITE then timed out. No media ever flowed.` : 'Not answered: no media ever flowed. The rejection code is not in these logs.');
+        if (!c.callee.imsi && c.callee.user) reasons.push(`${c.callee.user} never registered in IMS in this log (wrong number, or that phone was not on the network).`);
+        const busy = calls.find((o) => o !== c && o.established && o.start < c.start && (!o.end || o.end > c.start)
+          && [o.caller.imsi, o.callee.imsi].includes(c.callee.imsi));
+        if (busy) reasons.push(`${nm(c.callee)} was already in another call at that moment.`);
       } else if (c.endedBy === 'ongoing') {
         headline = 'Still up at the end of the log'; blame = 'none';
       } else if (c.endedBy === 'network') {
@@ -633,8 +823,15 @@
         const cf = coreFaultsNear(c.silentAt || c.end, 120000, 5000, [c.caller.imsi, c.callee.imsi]);
         if (cf.length) { blame = 'core'; reasons.push(`Core fault at that time: ${cf[0].title} (${fmt(cf[0].t)}).`); }
         else {
-          const around = [c.caller.imsi, c.callee.imsi].filter(Boolean).flatMap((im) => ranNear(im, c.end, 180000, 5000).map((e) => `${fmt(e.t)} ${im.slice(-3)}: ${e.label}`));
-          reasons.push(around.length ? `gNB events just before: ${around.slice(0, 3).join('; ')}.` : 'No core, IMS or gNB event around the drop.');
+          const from = (c.silentAt || c.end) - 180000, to = c.end + 120000;
+          const silent = [c.caller, c.callee].find((p) => p.imsi && p.imsi === c.silentSide);
+          const ranEv = (im) => (ues.get(im) ? ues.get(im).events : []).filter((e) => (e.sev === 'ran' || e.kind === 'ue_dereg') && e.t >= from && e.t <= to);
+          const own = silent ? ranEv(silent.imsi) : [];
+          const around = [c.caller.imsi, c.callee.imsi].filter(Boolean).flatMap((im) => ranEv(im).map((e) => `${fmt(e.t)} ${im.slice(-3)}: ${e.label}`));
+          if (own.length && own.some((e) => e.kind === 'rlf')) {
+            const r1 = own.find((e) => e.kind === 'rlf');
+            reasons.push(`${nm(silent)} lost its radio link: at ${fmt(r1.t)} it came back on a new radio connection while the gNB still held the old one (the gNB never told the core it had lost the phone).`);
+          } else reasons.push(around.length ? `gNB events around it: ${around.slice(0, 3).join('; ')}.` : 'No core, IMS or gNB event around the drop.');
         }
       }
       // media quality
@@ -683,7 +880,7 @@
       u.last.sip = sip.length ? sip[sip.length - 1].t : null;
       let rtpLast = null;
       for (const c of calls) for (const p of [c.caller, c.callee]) {
-        if (p.imsi === u.imsi && p.media && p.media.audio) rtpLast = Math.max(rtpLast || 0, p.media.audio.lastT);
+        if (c.established && p.imsi === u.imsi && p.media && p.media.audio && p.media.audio.packets > 0) rtpLast = Math.max(rtpLast || 0, p.media.audio.lastT);
       }
       u.last.media = rtpLast;
       const nas = u.events.filter((e) => ['reconnect', 'gnb_release', 'setup_fail', 'rlf', 'ue_dereg', 'qos_reject'].includes(e.kind));
@@ -710,14 +907,32 @@
       V.coreImpact = findings.filter((f) => f.sev === 'critical' && touches(f, [u.imsi]) && (f.end || f.t) >= u.first && f.t <= lastActive)
         .map((f) => ({ t: f.t, end: f.end || null, title: f.title, detail: f.detail, named: !!(f.imsi || f.affected) }));
 
+      const refused = u.events.filter((e) => e.kind === 'reject' && !e.laterOk);
+      if (!V.dropT && refused.length && !u.events.some((e) => e.kind === 'session_up' && e.t > refused[0].t)) {
+        const e = refused[refused.length - 1];
+        const n = refused.reduce((k, x) => k + x.count, 0), t0 = refused[0].t, t1 = Math.max(...refused.map((x) => x.lastT));
+        V.status = 'impaired'; V.blame = 'core';
+        V.headline = e.snssai ? 'Core refused to register it: slice not configured' : 'Core refused to register it';
+        V.reasons.push(`The AMF rejected ${n > 1 ? `all ${n} registration attempts (${fmt(t0)}–${fmt(t1)})` : `its registration at ${fmt(t0)}`}${e.cause != null ? ` with 5GMM cause #${e.cause}${GMM_CAUSE[e.cause] ? ' (' + GMM_CAUSE[e.cause] + ')' : ''}` : ''}.`);
+        if (e.snssai) V.reasons.push(`The phone asks for slice ${e.snssai.join(', ')}, which this core does not serve; it is still using a slice list from another network. Add the slice to amf.yaml and the subscriber, or clear the phone's stored slices (reset network settings or re-insert the SIM).`);
+        V.reasons.push('So it never had data or IMS service in this run. This is a configuration mismatch, not a crash, and it has nothing to do with the gNB.');
+        u.verdict = V; continue;
+      }
       if (!V.dropT) {
         if (u.pingEmpty && !u.last.ping) { V.status = 'nodata'; V.headline = 'Never answered pings in this run'; V.reasons.push('Its ping log was empty.'); }
         else if (V.coreImpact.length) {
           V.status = 'impaired'; V.blame = 'core'; V.headline = 'Service broken by a core fault';
           for (const f of V.coreImpact.slice(0, 3)) V.reasons.push(`${f.title}${f.end ? ` (${fmt(f.t)}–${fmt(f.end)})` : ` at ${fmt(f.t)}`}. ${f.detail}`);
         } else {
-          V.status = 'ok'; V.headline = u.last.ping ? 'Reachable until the end of the log' : 'No drop detected';
+          V.status = 'ok'; V.headline = u.last.ping ? 'Reachable until the end of the log' : 'No drop visible in the core logs';
           V.reasons.push(u.last.ping ? `Last ping reply ${fmt(u.last.ping)}.` : `Last activity ${fmt(lastSign)}. Nothing in the core or IMS logs shows it failing. Add its ping log to check data reachability.`);
+          if (!u.last.ping && lastSign && logEnd - lastSign > 3600000) {
+            const hold = u.events.find((e) => e.t > lastSign && ['gnb_reset', 'gnb_lost', 'implicit_dereg', 'mobile_unreachable'].includes(e.kind));
+            const quiet = Math.round(((hold ? hold.t : logEnd) - lastSign) / 3600000);
+            V.reasons.push(`After ${fmt(lastSign)} the core got no signalling from it for about ${quiet} h: no release, no detach, no reconnect. `
+              + (hold ? `The gNB kept it "connected" until ${fmt(hold.t)} (${lbl(hold)}).` : 'The gNB kept it "connected" to the end of this run.')
+              + ' So if its pings stopped in that time, the cause is on the radio side: the core never lost or released it.');
+          }
         }
         u.verdict = V; continue;
       }
@@ -771,7 +986,7 @@
       ueDrops: { core: drops.filter((u) => u.verdict.blame === 'core').length, ran: drops.filter((u) => u.verdict.blame === 'ran').length, ue: drops.filter((u) => u.verdict.blame === 'ue').length },
       calls: calls.length, callsEstablished: calls.filter((c) => c.established).length,
       callsCore: calls.filter((c) => c.blame === 'core').length, callsVideoDropped: calls.filter((c) => c.videoStop).length,
-      coreFaults: coreCrit.length, coreWarnings: findings.filter((f) => f.sev === 'warning').length
+      coreFaults: coreCrit.length, coreWarnings: findings.filter((f) => f.sev === 'warning' && !f.notCore).length
     };
     const hourly = (arr) => { const m = new Map(); for (const t of arr) { const h = Math.floor(t / 3600000) * 3600000; m.set(h, (m.get(h) || 0) + 1); } return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => ({ t, n })); };
     const nfNames = [...new Set(Object.keys(S.sources).map((s) => s.replace(/-FILE$/, '')))].sort();
@@ -785,7 +1000,8 @@
     });
     findings.sort((a, b) => a.t - b.t);
     return {
-      meta: { lines: S.lines, bytes: S.bytes, start: logStart, end: logEnd, tzOffsetSec: tz, sources: S.sources },
+      meta: { lines: S.lines, bytes: S.bytes, start: logStart, end: logEnd, tzOffsetSec: tz, sources: S.sources,
+        logStart: S0.start, logEnd: S0.end, window: win, runs },
       summary, findings, calls, pings: pingInfo,
       ues: ueList.map((u) => ({ imsi: u.imsi, msisdn: u.msisdn,
         ips: Object.fromEntries(Object.entries(u.ips).map(([k, v]) => [k, { latest: v.slice(-3), count: v.length }])),
@@ -823,9 +1039,10 @@
     const fs = require('fs'), readline = require('readline');
     const args = process.argv.slice(2);
     const jsonOut = args.includes('--json') ? args[args.indexOf('--json') + 1] : null;
-    const files = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--json' && args[i - 1] !== '--ping');
+    const runArg = args.includes('--run') ? args[args.indexOf('--run') + 1] : null;
+    const files = args.filter((a, i) => !a.startsWith('--') && !['--json', '--ping', '--run'].includes(args[i - 1]));
     const manual = args.map((a, i) => (args[i - 1] === '--ping' ? a : null)).filter(Boolean);
-    if (!files.length) { console.error('usage: node analyzer.js all.log [ping_<ip>.log ...] [--ping IP=YYYY-MM-DDTHH:MM:SS] [--json out.json]'); process.exit(1); }
+    if (!files.length) { console.error('usage: node analyzer.js all.log [ping_<ip>.log ...] [--ping IP=YYYY-MM-DDTHH:MM:SS] [--run N|all] [--json out.json]'); process.exit(1); }
     (async () => {
       const an = createAnalyzer();
       for (const f of files) {
@@ -834,10 +1051,16 @@
         for await (const line of rl) an.pushLine(line);
       }
       for (const m of manual) { const [ip, ts] = m.split('='); an.addPingManual(ip, Date.parse(ts + 'Z'), 'ping (given)'); }
-      const r = an.finish();
+      let r = an.finish();
+      if (runArg === 'all') r = an.finish({ window: 'all' });
+      else if (runArg != null) { const x = r.meta.runs[+runArg - 1]; if (!x) { console.error(`no run ${runArg}`); process.exit(1); } r = an.finish({ window: { from: x.from, to: x.to } }); }
       if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(r));
       const f = (t) => (t == null ? '—' : new Date(t).toISOString().replace('T', ' ').slice(0, 19));
-      console.log(`Log ${f(r.meta.start)} → ${f(r.meta.end)}  (${r.meta.lines} lines)`);
+      console.log(`Log ${f(r.meta.logStart)} → ${f(r.meta.logEnd)}  (${r.meta.lines} lines)`);
+      if (r.meta.runs.length > 1) {
+        r.meta.runs.forEach((x, i) => console.log(`  run ${i + 1}: ${f(x.from)} → ${f(x.to)}  (${x.startsWith} … ${x.endsWith})`));
+        console.log(r.meta.window ? `Showing ${f(r.meta.start)} → ${f(r.meta.end)}; use --run N or --run all to change.` : 'Showing the whole log.');
+      }
       console.log(`UEs ${r.summary.ues}, drops ${r.summary.drops}, calls ${r.summary.calls}, core faults ${r.summary.coreFaults}, warnings ${r.summary.coreWarnings}`);
       for (const x of r.findings) console.log(`  [${x.sev}] ${f(x.t)} ${x.comp}: ${x.title}`);
       for (const u of r.ues) console.log(`\n${u.imsi} ${u.msisdn.join(',')} ${Object.entries(u.ips).map(([k, v]) => k + ':' + v.latest.join('/') + (v.count > 3 ? ' (+' + (v.count - 3) + ')' : '')).join(' ')} ${u.pingMappedBy ? '[ping ' + u.pingMappedBy + ']' : ''}\n  ${u.verdict.status}/${u.verdict.blame} @ ${f(u.verdict.dropT)}: ${u.verdict.headline}\n  - ${u.verdict.reasons.join('\n  - ')}`);

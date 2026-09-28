@@ -82,6 +82,8 @@
   .progress { flex: 1 1 200px; height: 6px; border-radius: 3px; background: var(--hair); overflow: hidden; min-width: 120px; }
   .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
   .err { color: var(--crit-ink); font-weight: 500; }
+  .runpick { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--ink); }
+  .runpick select { max-width: min(100%, 86vw); }
 
   /* verdict banner */
   .banner { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; box-shadow: var(--shadow); padding: 22px 24px; display: grid; gap: 16px; }
@@ -100,6 +102,7 @@
 
   /* cards */
   .card { background: var(--surface); border: 1px solid var(--hair); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px; display: grid; gap: 14px; min-width: 0; }
+  .card > * { min-width: 0; } /* let wide tables scroll inside their card instead of widening the page */
   .card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
   .sub { color: var(--muted); font-size: 12.5px; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-2); }
@@ -132,10 +135,10 @@
   #tl a:hover .lbl-main { text-decoration: underline; }
 
   /* UE cards */
-  .ue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .ue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 14px; }
   .ue { background: var(--surface); border: 1px solid var(--hair); border-radius: 12px; padding: 16px 16px 12px; display: grid; gap: 10px; align-content: start; min-width: 0; scroll-margin-top: 16px; }
   .ue.v-core { border-color: var(--crit); box-shadow: inset 0 3px 0 var(--crit); }
-  .ue header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .ue header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 10px; }
   .ue .imsi { font: 500 14px var(--mono); }
   .ue .imsi b { font-weight: 600; color: var(--ink); }
   .ue .imsi span { color: var(--muted); }
@@ -175,7 +178,7 @@
   .why b { color: var(--ink); font-weight: 600; }
   .why ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
 
-  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 14px; }
   .finding { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--hair); }
   .finding.critical { border-color: var(--crit); background: var(--crit-wash); }
   .finding.warning { border-color: color-mix(in srgb, var(--warn) 60%, transparent); background: var(--warn-wash); }
@@ -291,9 +294,10 @@
   <section class="card method">
     <h2>How the verdict is decided</h2>
     <ol>
-      <li><b>Core or IMS is blamed</b> only for something it did: an NF crash or restart, SMF–UPF association loss, the UPF discarding packets (tun interface down), the network releasing a PDU session, a reject, or IMS ending a call that no phone hung up.</li>
+      <li><b>Core or IMS is blamed</b> only for something it did: an NF crash or restart (an operator's systemctl restart is labelled as such), SMF–UPF association loss, the UPF discarding packets (tun interface down), the network releasing a PDU session, a registration it refused (for example a slice that is not configured), or IMS ending an answered call that no phone hung up.</li>
       <li><b>Phone detached</b>: the phone sent a NAS Deregistration Request (power-off, airplane mode, low battery).</li>
-      <li><b>Radio side</b>: the gNB released the UE, failed to set up its bearers, reset, or lost its N2 link, or the phone simply went silent while the gNB kept it "connected" and never told the core.</li>
+      <li><b>Radio side</b>: the gNB released the UE, failed to set up its bearers, reset, or lost its N2 link, sent uplink packets the UPF could not parse, or the phone simply went silent while the gNB kept it "connected" and never told the core.</li>
+      <li><b>Several runs in one log</b>: the log is split at gNB resets, gNB reconnects and core restarts. The longest run is shown first; pick another run or the whole log above.</li>
       <li><b>Calls</b> are judged by who sent the BYE and whether media was still arriving from each phone at that moment (from RTPEngine's per-stream last-packet times).</li>
       <li><b>Not visible here</b>: gNB internals (RLF, scheduling, HARQ) and throughput. The core logs only show what reached the core. Ping logs tell when data actually stopped.</li>
     </ol>
@@ -311,7 +315,8 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const hms = (t) => t == null ? '—' : new Date(t).toISOString().slice(11, 19);
+  let multiDay = false; // set per result: runs longer than a night show dates next to times
+  const hms = (t) => t == null ? '—' : (multiDay ? day(t) + ' ' : '') + new Date(t).toISOString().slice(11, 19);
   const hm = (t) => t == null ? '—' : new Date(t).toISOString().slice(11, 16);
   const day = (t) => { const d = new Date(t); return `${MON[d.getUTCMonth()]} ${d.getUTCDate()}`; };
   const dayhm = (t) => t == null ? '—' : `${day(t)} ${hm(t)}`;
@@ -334,10 +339,10 @@
     if (v.status === 'dropped' && v.blame === 'ue') return `<span class="chip">${ICON.ue}Not the core · phone detached</span>`;
     if (v.status === 'dropped') return `<span class="chip">${ICON.ran}Not the core · radio side</span>`;
     if (v.status === 'nodata') return '<span class="chip warn">No data</span>';
-    return `<span class="chip ok">${ICON.ok}No drop</span>`;
+    return `<span class="chip ok">${ICON.ok}${v.headline && /core logs/.test(v.headline) ? 'No drop seen' : 'No drop'}</span>`;
   }
 
-  const state = { result: null, analyzer: null, label: '', sample: false, ipMap: loadIpMap() };
+  const state = { result: null, analyzer: null, label: '', sample: false, ipMap: loadIpMap(), window: undefined };
   function loadIpMap() { try { return JSON.parse(localStorage.getItem('coreAlibi.ipMap') || '{}'); } catch (e) { return {}; } }
   function saveIpMap() { try { localStorage.setItem('coreAlibi.ipMap', JSON.stringify(state.ipMap)); } catch (e) { /* storage unavailable */ } }
 
@@ -346,10 +351,28 @@
     const r = state.result, el = $('#status');
     if (!r) { el.innerHTML = extra || ''; return; }
     const m = r.meta;
+    const runs = m.runs || [];
+    const isSel = (x) => m.window && m.window.from === x.from && m.window.to === x.to;
+    const picker = runs.length > 1 && state.analyzer
+      ? `<label class="runpick">Run <select id="runSel" aria-label="Which run of the log to analyse">
+          <option value="all" ${m.window ? '' : 'selected'}>Whole log · ${dayhm(m.logStart)} → ${dayhm(m.logEnd)}</option>
+          ${runs.map((x, i) => `<option value="${i}" ${isSel(x) ? 'selected' : ''}>${i + 1} · ${dayhm(x.from)} → ${dayhm(x.to)} (${dur(x.to - x.from)})</option>`).join('')}
+        </select></label>
+        <span class="muted">${runs.length} runs in this log, split at gNB resets, gNB reconnects and core restarts${state.window === undefined && m.window ? '. Showing the longest' : ''}.</span>`
+      : `<span class="mono">${dayhm(m.start)} → ${dayhm(m.end)}</span>`;
     el.innerHTML = `${state.sample ? '<span class="tag sample">Sample</span>' : '<span class="tag">Your log</span>'}
       <span>${esc(state.label)}</span>
-      <span class="mono">${dayhm(m.start)} → ${dayhm(m.end)}</span>
+      ${picker}
       <span class="muted">${m.lines.toLocaleString()} lines · ${(m.bytes / 1048576).toFixed(0)} MB</span>${extra || ''}`;
+    const rs = $('#runSel');
+    if (rs) rs.addEventListener('change', () => {
+      state.window = rs.value === 'all' ? 'all' : { from: runs[+rs.value].from, to: runs[+rs.value].to };
+      rerun();
+    });
+  }
+  function rerun() {
+    state.result = state.analyzer.finish({ ipMap: state.ipMap, window: state.window });
+    renderAll();
   }
   function renderBanner(r) {
     const s = r.summary;
@@ -367,7 +390,7 @@
         <div>
           <h2>${guilty ? 'Core or IMS at fault' : 'Core and IMS are in the clear'}</h2>
           <p class="lede">${esc(lede)}</p>
-          ${guilty ? `<ul class="faults">${crit.slice(0, 5).map((f) => `<li><span class="mono">${hm(f.t)}${f.end ? '–' + hm(f.end) : ''}</span> ${esc(f.title)}</li>`).join('')}${crit.length > 5 ? `<li>…and ${crit.length - 5} more below</li>` : ''}</ul>` : ''}
+          ${guilty ? `<ul class="faults">${crit.slice(0, 5).map((f) => `<li><span class="mono">${multiDay ? day(f.t) + ' ' : ''}${hm(f.t)}${f.end ? '–' + hm(f.end) : ''}</span> ${esc(f.title)}</li>`).join('')}${crit.length > 5 ? `<li>…and ${crit.length - 5} more below</li>` : ''}</ul>` : ''}
         </div>
       </div>
       <div class="stats">
@@ -382,7 +405,7 @@
   }
 
   /* ---------------- timeline ---------------- */
-  const RAN_KINDS = new Set(['gnb_release', 'setup_fail', 'rlf', 'qos_reject', 'gnb_lost', 'gnb_reset']);
+  const RAN_KINDS = new Set(['gnb_release', 'setup_fail', 'rlf', 'qos_reject', 'gnb_lost', 'gnb_reset', 'gnb_bad_ul']);
   function renderTimeline(r) {
     const svg = $('#tl');
     const box = svg.parentElement.clientWidth || 900;
@@ -498,12 +521,13 @@
   function renderCalls(r) {
     const who = (p) => `<div class="who">${esc(p.user || '?')}<br><small>…${esc(tail(p.imsi))}${p.ip ? ' · ' + esc(p.ip) : ''}</small></div>`;
     const rows = r.calls.map((c) => {
-      const ended = c.endedBy === 'phone' ? (c.byeFrom.length > 1 ? 'both phones' : c.byeFrom[0] === 'caller' ? 'caller' : 'callee') : c.endedBy === 'network' ? '<b style="color:var(--crit-ink)">network</b>' : c.endedBy === 'ongoing' ? 'still up' : '—';
+      const ended = c.endedBy === 'phone' ? (c.byeFrom.length > 1 ? 'both phones' : c.byeFrom[0] === 'caller' ? 'caller' : 'callee') : c.endedBy === 'network' ? '<b style="color:var(--crit-ink)">network</b>' : c.endedBy === 'ongoing' ? 'still up'
+        : c.endedBy === 'unanswered' ? '<span class="muted">not answered</span>' : c.endedBy === 'cancelled' ? '<span class="muted">caller cancelled</span>' : '—';
       const video = !c.hadVideo ? '<span class="muted">none</span>' : c.videoStop ? `stopped ${hms(c.videoStop)}${c.videoStopBy ? ` by ${esc(c.videoStopBy)}` : ''}` : 'until the end';
       const chip = c.blame === 'core' ? `<span class="chip core">${ICON.core}Core / IMS</span>` : c.blame === 'none' ? `<span class="chip ok">${ICON.ok}Running</span>` : c.blame === 'unknown' ? '<span class="chip">Did not connect</span>' : `<span class="chip">${ICON.ran}Not the core</span>`;
       const reasons = [c.videoReason && c.videoStop ? c.videoReason : null, ...c.reasons].filter(Boolean);
       return `<tr>
-        <td class="num">${hms(c.start)}<br><span class="muted">${c.end ? '→ ' + hms(c.end) : '→ end of log'}</span><br><span class="muted">${c.end ? dur(c.end - c.start) : ''}</span></td>
+        <td class="num">${c.startedBefore ? `<span class="muted">up before the log;</span><br>first seen ${hms(c.start)}` : hms(c.start)}<br><span class="muted">${c.end ? '→ ' + hms(c.end) : '→ end of log'}</span><br><span class="muted">${c.end ? dur(c.end - c.start) : ''}</span></td>
         <td>${who(c.caller)}</td><td>${who(c.callee)}</td>
         <td class="num">${video}</td><td>${ended}</td><td>${chip}</td>
         <td class="why"><b>${esc(c.headline)}</b>${reasons.length ? `<ul>${reasons.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</td>
@@ -552,13 +576,13 @@
     el.querySelectorAll('select[data-ip]').forEach((s) => s.addEventListener('change', () => {
       if (s.value) state.ipMap[s.dataset.ip] = s.value; else delete state.ipMap[s.dataset.ip];
       saveIpMap();
-      state.result = state.analyzer.finish({ ipMap: state.ipMap });
-      renderAll();
+      rerun();
     }));
   }
 
   function renderAll() {
     const r = state.result;
+    multiDay = r.meta.end - r.meta.start > 20 * 3600000;
     renderStatus(); renderBanner(r); renderTimeline(r); renderUEs(r); renderCalls(r); renderHealth(r);
   }
 
@@ -585,7 +609,7 @@
       if (!logs.length) {
         if (!state.analyzer) { renderStatus('<span class="err">Open all.log first (you can select the ping logs at the same time).</span>'); return; }
         for (const p of pingFiles) state.analyzer.addPingFile(p.name, await p.text(), p.lastModified);
-        state.result = state.analyzer.finish({ ipMap: state.ipMap }); renderAll(); return;
+        rerun(); return;
       }
       const an = CoreAlibi.createAnalyzer();
       const total = logs.reduce((n, f) => n + f.size, 0) || 1;
@@ -599,9 +623,9 @@
         done = base + f.size;
       }
       for (const p of pingFiles) an.addPingFile(p.name, await p.text(), p.lastModified);
-      state.analyzer = an; state.sample = false;
+      state.analyzer = an; state.sample = false; state.window = undefined;
       state.label = logs.map((f) => f.name).join(', ') + (pingFiles.length ? ` + ${pingFiles.length} ping log${pingFiles.length === 1 ? '' : 's'}` : '');
-      state.result = an.finish({ ipMap: state.ipMap });
+      state.result = an.finish({ ipMap: state.ipMap, window: state.window });
       if (!state.result.meta.lines || !state.result.meta.start) { renderStatus('<span class="err">No lines in the expected "[YYYY-MM-DD HH:MM:SS] [SOURCE] …" format were found. Is this the monitor script\'s all.log?</span>'); return; }
       renderAll();
     } catch (err) {
